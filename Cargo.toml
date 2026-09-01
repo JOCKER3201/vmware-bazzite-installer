@@ -1,0 +1,17 @@
+[package]
+name = "vmware-sysext-builder"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Graficzny kreator obrazu systemd-sysext (vmware.raw) z pakietu VMware Workstation .bundle — dla Bazzite i innych systemów Fedora Atomic"
+
+[dependencies]
+eframe = "0.29"
+rfd = "0.15"
+anyhow = "1"
+tar = "0.4"
+libc = "0.2"
+
+[profile.release]
+lto = true
+strip = true
