@@ -171,7 +171,7 @@ impl InstallerApp {
                 match &self.bundle_path {
                     Some(path) => {
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
-                        let version = guess_bundle_version(&name)
+                        let version = crate::util::guess_bundle_version(&name)
                             .map(|v| format!("  (wykryta wersja: {v})"))
                             .unwrap_or_default();
                         ui.label(RichText::new(format!("{name}{version}")).strong());
@@ -186,7 +186,7 @@ impl InstallerApp {
                 .as_ref()
                 .and_then(|p| p.file_name())
                 .map(|n| n.to_string_lossy().into_owned())
-                .and_then(|n| guess_bundle_version(&n))
+                .and_then(|n| crate::util::guess_bundle_version(&n))
             {
                 if version.starts_with("17.") {
                     ui.colored_label(
@@ -549,18 +549,6 @@ fn kernel_label(kernel: &KernelInfo) -> String {
         label.push_str("  ⚠ brak kernel-devel");
     }
     label
-}
-
-/// Prosta heurystyka: wersja z nazwy pliku typu
-/// VMware-Workstation-Full-17.6.4-24832109.x86_64.bundle
-fn guess_bundle_version(name: &str) -> Option<String> {
-    let rest = name.split("VMware-Workstation-Full-").nth(1)?;
-    let version = rest.split('-').next()?;
-    if version.is_empty() {
-        None
-    } else {
-        Some(version.to_string())
-    }
 }
 
 impl eframe::App for InstallerApp {

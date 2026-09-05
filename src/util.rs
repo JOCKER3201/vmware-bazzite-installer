@@ -119,6 +119,40 @@ fn pipe_to_log(tx: Sender<BuildEvent>, stream: impl Read + Send + 'static) -> th
     })
 }
 
+/// Uruchamia polecenie i zwraca jego stdout (przycięty) — do krótkich
+/// odczytów typu modinfo/sha256sum, bez strumieniowania do dziennika.
+pub fn capture_cmd<I, S>(program: &str, args: I) -> Result<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let output = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .with_context(|| format!("Nie udało się uruchomić `{program}`"))?;
+    if !output.status.success() {
+        bail!(
+            "Polecenie `{program}` zakończyło się błędem ({}): {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Wersja VMware z nazwy pliku typu
+/// VMware-Workstation-Full-25H2-24995812.x86_64.bundle → "25H2".
+pub fn guess_bundle_version(name: &str) -> Option<String> {
+    let rest = name.split("VMware-Workstation-Full-").nth(1)?;
+    let version = rest.split('-').next()?;
+    if version.is_empty() {
+        None
+    } else {
+        Some(version.to_string())
+    }
+}
+
 /// Czy program o danej nazwie jest dostępny w PATH?
 pub fn cmd_exists(name: &str) -> bool {
     std::env::var_os("PATH")

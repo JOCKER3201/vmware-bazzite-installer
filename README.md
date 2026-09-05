@@ -34,6 +34,13 @@ Atomic (obraz systemu tylko do odczytu). Całość napisana w Rust (egui).
    - generuje **nadzbiór metadanych `depmod`** (moduły bazowe + vmmon/vmnet),
      dzięki czemu po scaleniu działa zwykłe `modprobe` i nic nie przesłania
      modułów bazowych,
+   - **weryfikuje drzewo przed pakowaniem**: struktura (wyłącznie `/usr`),
+     obecność `extension-release`, martwe dowiązania oraz zgodność
+     `vermagic` modułów z jądrem docelowym (`modinfo`),
+   - zapisuje **manifest odtwarzalności** (`/usr/share/vmware-sysext/manifest`
+     w obrazie + kopia `vmware-sysext-manifest.txt` obok niego): nazwa
+     i SHA-256 pakietu, wersja VMware, jądro, pochodzenie źródeł modułów,
+     data builda,
    - buduje obraz **erofs** z etykietami SELinux z systemowego
      `file_contexts` (stockowy Bazzite działa w trybie enforcing).
 4. Pokazuje polecenia instalacji albo instaluje od razu przez `pkexec`.

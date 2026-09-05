@@ -16,6 +16,8 @@ use crate::util;
 pub struct BuiltModules {
     pub vmmon: PathBuf,
     pub vmnet: PathBuf,
+    /// Pochodzenie źródeł modułów — trafia do manifestu odtwarzalności.
+    pub source_desc: String,
 }
 
 pub fn build_all(
@@ -27,7 +29,7 @@ pub fn build_all(
 ) -> Result<BuiltModules> {
     let srcroot = work.join("modules-src");
     fs::create_dir_all(&srcroot)?;
-    prepare_sources(tx, cancel, cfg, extracted, &srcroot)?;
+    let source_desc = prepare_sources(tx, cancel, cfg, extracted, &srcroot)?;
 
     let jobs = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -79,6 +81,7 @@ pub fn build_all(
     Ok(BuiltModules {
         vmmon: built[0].clone(),
         vmnet: built[1].clone(),
+        source_desc,
     })
 }
 
@@ -88,19 +91,22 @@ fn prepare_sources(
     cfg: &BuildConfig,
     extracted: &Path,
     srcroot: &Path,
-) -> Result<()> {
+) -> Result<String> {
     let mut have_sources = false;
+    let mut source_desc = String::new();
     if let Some(custom) = &cfg.custom_sources {
         util::log(tx, format!("Katalog użytkownika: {}", custom.display()));
         if custom.join("vmmon-only").is_dir() && custom.join("vmnet-only").is_dir() {
             util::log(tx, "Używam źródeł vmmon-only/ i vmnet-only/ z katalogu użytkownika");
             util::copy_tree(&custom.join("vmmon-only"), &srcroot.join("vmmon-only"))?;
             util::copy_tree(&custom.join("vmnet-only"), &srcroot.join("vmnet-only"))?;
+            source_desc = format!("własne źródła (vmmon-only/vmnet-only): {}", custom.display());
             have_sources = true;
         } else if custom.join("vmmon.tar").is_file() && custom.join("vmnet.tar").is_file() {
             util::log(tx, "Używam vmmon.tar i vmnet.tar z katalogu użytkownika");
             untar(&custom.join("vmmon.tar"), srcroot)?;
             untar(&custom.join("vmnet.tar"), srcroot)?;
+            source_desc = format!("własne archiwa vmmon.tar/vmnet.tar: {}", custom.display());
             have_sources = true;
         }
     }
@@ -113,6 +119,7 @@ fn prepare_sources(
         );
         untar(&vmmon_tar, srcroot)?;
         untar(&vmnet_tar, srcroot)?;
+        source_desc = "archiwa vmmon.tar/vmnet.tar z pakietu .bundle".to_string();
     }
 
     // Opcjonalne łatki na nowe jądra (układ pakietu AUR vmware-workstation:
@@ -145,6 +152,9 @@ fn prepare_sources(
             )
             .with_context(|| format!("Nałożenie łatki {patch_name} nie powiodło się"))?;
         }
+        if any_patch {
+            source_desc.push_str(&format!(" + łatki z {}", custom.display()));
+        }
         if !have_sources && !any_patch {
             bail!(
                 "Katalog {} nie zawiera ani źródeł (vmmon-only/ i vmnet-only/ lub \
@@ -153,7 +163,7 @@ fn prepare_sources(
             );
         }
     }
-    Ok(())
+    Ok(source_desc)
 }
 
 fn untar(tar_path: &Path, dest: &Path) -> Result<()> {
