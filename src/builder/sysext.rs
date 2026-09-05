@@ -5,10 +5,10 @@
 // z pakietu AUR vmware-workstation (potwierdzony niezależnie w NixOS).
 
 use anyhow::{bail, Context, Result};
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -239,6 +239,178 @@ pub fn assemble(
     );
 
     write_own_files(tx, staging, fuse_conf)?;
+    write_manifest(tx, cfg, staging, built)?;
+    Ok(())
+}
+
+/// Manifest odtwarzalności (metodologia z SYSEXT-BUILD-GUIDE.md, pkt 7):
+/// dokładne wersje i pochodzenie składników w jednym miejscu — „odtwórz
+/// obraz” ma być wykonaniem przepisu, nie odtwarzaniem sesji z pamięci.
+fn write_manifest(
+    tx: &Sender<BuildEvent>,
+    cfg: &BuildConfig,
+    staging: &Path,
+    built: &BuiltModules,
+) -> Result<()> {
+    let bundle_name = cfg
+        .bundle
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let version =
+        util::guess_bundle_version(&bundle_name).unwrap_or_else(|| "nieznana".to_string());
+    util::log(tx, "Liczę sumę SHA-256 pakietu .bundle (manifest)…");
+    let sha = util::capture_cmd("sha256sum", [cfg.bundle.as_os_str()])
+        .ok()
+        .and_then(|out| out.split_whitespace().next().map(str::to_string))
+        .unwrap_or_else(|| "nieznana".to_string());
+    let date = util::capture_cmd("date", ["-u", "+%Y-%m-%dT%H:%M:%SZ"]).unwrap_or_default();
+    let manifest = format!(
+        "# Manifest obrazu vmware.raw — dane do odtworzenia identycznego builda\n\
+         bundle={bundle_name}\n\
+         bundle_sha256={sha}\n\
+         vmware_version={version}\n\
+         kernel={kernel}\n\
+         modules_source={source}\n\
+         built_utc={date}\n\
+         builder=vmware-sysext-builder {builder_version}\n",
+        kernel = cfg.kernel,
+        source = built.source_desc,
+        builder_version = env!("CARGO_PKG_VERSION"),
+    );
+    util::write_file(
+        &staging.join("usr/share/vmware-sysext/manifest"),
+        &manifest,
+        0o644,
+    )?;
+    Ok(())
+}
+
+/// Weryfikacja przed pakowaniem („weryfikuj przez narzędzia, nie przez
+/// pamięć”): struktura obrazu, martwe dowiązania (odpowiednik
+/// `find . -xtype l`), zgodność vermagic modułów z jądrem docelowym.
+pub fn verify(tx: &Sender<BuildEvent>, staging: &Path, kernel: &str) -> Result<()> {
+    // 1. Sysext obejmuje wyłącznie /usr — nic innego na szczycie drzewa.
+    for entry in fs::read_dir(staging)?.flatten() {
+        if entry.file_name() != "usr" {
+            bail!(
+                "Nieoczekiwany wpis najwyższego poziomu w drzewie obrazu: {} — \
+                 sysext może zawierać wyłącznie usr/",
+                entry.path().display()
+            );
+        }
+    }
+
+    // 2. Bez extension-release scalenie po cichu pominęłoby obraz.
+    let release = staging.join("usr/lib/extension-release.d/extension-release.vmware");
+    if !release.is_file() {
+        bail!("Brak {} — obraz nie zostałby scalony", release.display());
+    }
+
+    // 3. Martwe dowiązania. Cele bezwzględne poza /usr (np. /etc/vmware/…)
+    //    mogą powstać dopiero w czasie działania — tylko informujemy.
+    let mut dangling: Vec<(PathBuf, PathBuf)> = Vec::new();
+    scan_symlinks(staging, staging, &mut dangling)?;
+    let mut serious = 0usize;
+    for (link, target) in &dangling {
+        let inside_usr = !target.is_absolute() || target.starts_with("/usr");
+        if inside_usr {
+            serious += 1;
+        }
+        util::log(
+            tx,
+            format!(
+                "Martwe dowiązanie: {} → {}{}",
+                link.strip_prefix(staging).unwrap_or(link).display(),
+                target.display(),
+                if inside_usr {
+                    ""
+                } else {
+                    "  (cel poza /usr — może powstać w czasie działania)"
+                }
+            ),
+        );
+    }
+    if serious > 0 {
+        let _ = tx.send(BuildEvent::Warning(format!(
+            "Wykryto martwe dowiązania wewnątrz /usr: {serious} — szczegóły w dzienniku"
+        )));
+    }
+
+    // 4. vermagic modułów musi zaczynać się od wersji jądra docelowego.
+    for name in ["vmmon.ko", "vmnet.ko"] {
+        let ko = staging
+            .join("usr/lib/modules")
+            .join(kernel)
+            .join("misc")
+            .join(name);
+        let vermagic = util::capture_cmd(
+            "modinfo",
+            [OsStr::new("-F"), OsStr::new("vermagic"), ko.as_os_str()],
+        )
+        .with_context(|| format!("Nie udało się odczytać vermagic z {name}"))?;
+        let built_for = vermagic.split_whitespace().next().unwrap_or("");
+        if built_for != kernel {
+            bail!(
+                "Moduł {name} jest zbudowany dla jądra „{built_for}”, a obraz celuje \
+                 w „{kernel}” — niezgodność vermagic"
+            );
+        }
+        util::log(tx, format!("vermagic {name}: {vermagic} ✓"));
+    }
+
+    util::log(
+        tx,
+        format!(
+            "Weryfikacja zakończona: struktura OK, vermagic OK, martwe dowiązania: {}",
+            dangling.len()
+        ),
+    );
+    Ok(())
+}
+
+/// Lexykalna normalizacja ścieżki (składa `..` i `.` bez dotykania dysku).
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Zbiera dowiązania, których cel nie istnieje ani w drzewie obrazu,
+/// ani (dla celów bezwzględnych) w systemie bazowym.
+fn scan_symlinks(
+    root: &Path,
+    dir: &Path,
+    dangling: &mut Vec<(PathBuf, PathBuf)>,
+) -> Result<()> {
+    for entry in fs::read_dir(dir)?.flatten() {
+        let path = entry.path();
+        let file_type = fs::symlink_metadata(&path)?.file_type();
+        if file_type.is_dir() {
+            scan_symlinks(root, &path, dangling)?;
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&path)?;
+            let in_staging = if target.is_absolute() {
+                root.join(target.strip_prefix("/").unwrap_or(&target))
+            } else {
+                path.parent().unwrap_or(root).join(&target)
+            };
+            let in_staging = normalize_lexical(&in_staging);
+            let ok_in_staging = fs::symlink_metadata(&in_staging).is_ok();
+            let ok_on_host = target.is_absolute() && fs::symlink_metadata(&target).is_ok();
+            if !ok_in_staging && !ok_on_host {
+                dangling.push((path, target));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -559,6 +731,12 @@ pub fn make_image(
         return Err(err);
     }
     fs::rename(&tmp, &raw).context("Nie udało się podmienić vmware.raw")?;
+
+    // Kopia manifestu obok obrazu — przepis na odtworzenie builda.
+    let manifest = staging.join("usr/share/vmware-sysext/manifest");
+    if manifest.is_file() {
+        let _ = fs::copy(&manifest, output_dir.join("vmware-sysext-manifest.txt"));
+    }
 
     let size = fs::metadata(&raw)?.len();
     util::log(

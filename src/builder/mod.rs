@@ -33,6 +33,7 @@ pub const STAGES: &[&str] = &[
     "Kompilacja modułów jądra (vmmon, vmnet)",
     "Składanie drzewa rozszerzenia (/usr)",
     "Metadane modułów (depmod)",
+    "Weryfikacja drzewa (struktura, dowiązania, vermagic)",
     "Budowanie obrazu vmware.raw",
 ];
 
@@ -125,6 +126,10 @@ fn run(cfg: &BuildConfig, tx: &Sender<BuildEvent>, cancel: &Arc<AtomicBool>) -> 
 
     check_cancel(cancel)?;
     stage(tx, 5);
+    sysext::verify(tx, &staging, &cfg.kernel)?;
+
+    check_cancel(cancel)?;
+    stage(tx, 6);
     let raw = sysext::make_image(tx, cancel, &staging, &work, &cfg.output_dir)?;
 
     util::log(tx, format!("Gotowe: {}", raw.display()));
