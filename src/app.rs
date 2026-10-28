@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use eframe::egui::{self, Color32, RichText};
 
-use crate::builder::{self, kernel::KernelInfo, BuildConfig, BuildEvent, BuildTask, STAGES};
+use crate::builder::{
+    self, installed::InstalledImage, kernel::KernelInfo, BuildConfig, BuildEvent, BuildTask, STAGES,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum TaskKind {
@@ -18,6 +20,13 @@ enum TaskKind {
 
 pub struct InstallerApp {
     bundle_path: Option<PathBuf>,
+    /// Czy bundle_path pochodzi z autodetekcji (manifest zainstalowanego
+    /// obrazu), a nie z ręcznego wyboru użytkownika.
+    bundle_auto: bool,
+    /// Manifest aktualnie scalonego rozszerzenia (jeśli jest zainstalowane).
+    installed: Option<InstalledImage>,
+    /// Nazwa systemu z /etc/os-release, np. „Bazzite 45”.
+    os_label: Option<String>,
     kernels: Vec<KernelInfo>,
     selected_kernel: usize,
     output_dir: Option<PathBuf>,
@@ -40,10 +49,19 @@ pub struct InstallerApp {
 impl InstallerApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_pixels_per_point(1.1);
+        let kernels = builder::kernel::detect();
+        // Autodetekcja: jądro docelowe = uruchomione, a pakiet .bundle —
+        // ten z manifestu zainstalowanego obrazu (jeśli da się go odnaleźć).
+        let selected_kernel = kernels.iter().position(|k| k.running).unwrap_or(0);
+        let installed = builder::installed::read();
+        let bundle_path = installed.as_ref().and_then(builder::installed::locate_bundle);
         Self {
-            bundle_path: None,
-            kernels: builder::kernel::detect(),
-            selected_kernel: 0,
+            bundle_auto: bundle_path.is_some(),
+            bundle_path,
+            installed,
+            os_label: builder::installed::os_label(),
+            kernels,
+            selected_kernel,
             output_dir: None,
             custom_sources: None,
             sign_key: None,
@@ -96,6 +114,11 @@ impl InstallerApp {
                                 self.build_result = Some(result);
                             }
                             TaskKind::Install => {
+                                if result.is_ok() {
+                                    // Po scaleniu manifest w /usr już opisuje
+                                    // nowy obraz — odśwież baner statusu.
+                                    self.installed = builder::installed::read();
+                                }
                                 self.install_result = Some(result.map(|_| ()));
                             }
                         }
@@ -149,6 +172,88 @@ impl InstallerApp {
         self.task = Some((TaskKind::Build, builder::spawn_build(cfg)));
     }
 
+    /// Stan zainstalowanego rozszerzenia względem uruchomionego systemu.
+    /// Po aktualizacji systemu (nowe jądro, np. Bazzite F44 → F45) moduły
+    /// starego obrazu nie pasują — baner proponuje przebudowę jednym
+    /// kliknięciem: wykryty pakiet .bundle + uruchomione jądro.
+    fn section_status(&mut self, ui: &mut egui::Ui) {
+        let Some(installed) = self.installed.clone() else {
+            // Brak zainstalowanego obrazu — zwykły kreator, bez banera.
+            return;
+        };
+        let Some(running) = self.kernels.iter().find(|k| k.running).cloned() else {
+            return;
+        };
+        if builder::installed::modules_present(&running.version) {
+            ui.group(|ui| {
+                ui.colored_label(
+                    Color32::from_rgb(120, 200, 120),
+                    format!(
+                        "✔ Zainstalowany obraz vmware.raw pasuje do uruchomionego jądra {} — \
+                         przebudowa niepotrzebna.",
+                        running.version
+                    ),
+                );
+            });
+            ui.add_space(8.0);
+            return;
+        }
+        ui.group(|ui| {
+            let os = self
+                .os_label
+                .clone()
+                .unwrap_or_else(|| "system".to_string());
+            let built = installed
+                .built_utc
+                .as_deref()
+                .map(|d| format!(", zbudowany {d}"))
+                .unwrap_or_default();
+            ui.colored_label(
+                Color32::from_rgb(230, 170, 70),
+                format!(
+                    "⚠ Wykryto aktualizację systemu: {os} działa na jądrze {}, a zainstalowany \
+                     obraz zbudowano pod {}{built} (pakiet {}).\n\
+                     Moduły VMware nie są dostępne dla bieżącego jądra — obraz wymaga przebudowy.",
+                    running.version, installed.kernel, installed.bundle_name
+                ),
+            );
+            ui.add_space(4.0);
+            if self.bundle_path.is_some() {
+                let ready = running.devel && self.task.is_none();
+                if ui
+                    .add_enabled(
+                        ready,
+                        egui::Button::new(
+                            RichText::new("🔁 Przebuduj pod uruchomione jądro").size(15.0),
+                        ),
+                    )
+                    .clicked()
+                {
+                    if let Some(index) = self.kernels.iter().position(|k| k.running) {
+                        self.selected_kernel = index;
+                    }
+                    self.start_build();
+                }
+                if !running.devel {
+                    ui.colored_label(
+                        Color32::LIGHT_RED,
+                        "✖ Brak nagłówków uruchomionego jądra (kernel-devel) — patrz sekcja 2.",
+                    );
+                }
+            } else {
+                ui.colored_label(
+                    Color32::LIGHT_RED,
+                    format!(
+                        "Nie odnaleziono pakietu {} — wskaż plik .bundle w sekcji 1, \
+                         a potem zbuduj obraz.",
+                        installed.bundle_name
+                    ),
+                );
+            }
+        });
+        ui.add_space(8.0);
+    }
+
     fn section_bundle(&mut self, ui: &mut egui::Ui) {
         ui.group(|ui| {
             ui.strong("1. Plik instalacyjny VMware");
@@ -166,6 +271,7 @@ impl InstallerApp {
                     }
                     if let Some(file) = dialog.pick_file() {
                         self.bundle_path = Some(file);
+                        self.bundle_auto = false;
                     }
                 }
                 match &self.bundle_path {
@@ -181,6 +287,15 @@ impl InstallerApp {
                     }
                 }
             });
+            if self.bundle_auto {
+                ui.label(
+                    RichText::new(
+                        "Pakiet odnaleziony automatycznie na podstawie zainstalowanego obrazu — \
+                         możesz wskazać inny.",
+                    )
+                    .weak(),
+                );
+            }
             if let Some(version) = self
                 .bundle_path
                 .as_ref()
@@ -571,6 +686,7 @@ impl eframe::App for InstallerApp {
                 .show(ui, |ui| {
                     let busy = self.task.is_some();
                     ui.add_enabled_ui(!busy, |ui| {
+                        self.section_status(ui);
                         self.section_bundle(ui);
                         ui.add_space(8.0);
                         self.section_kernel(ui);

@@ -14,11 +14,20 @@ Atomic (obraz systemu tylko do odczytu). Całość napisana w Rust (egui).
 
 ## Co robi
 
+0. **Sam wykrywa wersję systemu i jądra.** Przy starcie czyta manifest
+   zainstalowanego obrazu (`/usr/share/vmware-sysext/manifest`) i porównuje
+   go z uruchomionym jądrem. Po aktualizacji systemu (np. Bazzite F44 → F45)
+   pokazuje baner, odnajduje poprzednio użyty pakiet `.bundle` (ścieżka
+   z manifestu albo katalog pobrań) i przebudowuje obraz pod bieżące jądro
+   **jednym kliknięciem** — bez ręcznego wybierania czegokolwiek.
 1. **Wskazujesz plik `.bundle`** — pobrany samodzielnie z portalu Broadcom
    (od listopada 2024 Workstation Pro jest darmowy, także komercyjnie;
-   program nie pobiera niczego z sieci).
+   program nie pobiera niczego z sieci). Przy przebudowie po aktualizacji
+   plik jest już wykryty automatycznie.
 2. **Wykrywa zainstalowane jądra** (`/usr/lib/modules`) i sprawdza obecność
-   nagłówków (`kernel-devel`); domyślnie wybiera jądro uruchomione.
+   nagłówków (`kernel-devel`); domyślnie wybiera jądro uruchomione, a ślady
+   po scalonych rozszerzeniach (katalogi samych modułów vmmon/vmnet starego
+   jądra) pomija.
    Bazzite ma `gcc`, `make` i dopasowany `kernel-devel` w obrazie bazowym.
 3. Po kliknięciu **„Zbuduj vmware.raw”**:
    - rozpakowuje `.bundle` poleceniem `sh <bundle> --extract` (bez
@@ -38,9 +47,10 @@ Atomic (obraz systemu tylko do odczytu). Całość napisana w Rust (egui).
      obecność `extension-release`, martwe dowiązania oraz zgodność
      `vermagic` modułów z jądrem docelowym (`modinfo`),
    - zapisuje **manifest odtwarzalności** (`/usr/share/vmware-sysext/manifest`
-     w obrazie + kopia `vmware-sysext-manifest.txt` obok niego): nazwa
-     i SHA-256 pakietu, wersja VMware, jądro, pochodzenie źródeł modułów,
-     data builda,
+     w obrazie + kopia `vmware-sysext-manifest.txt` obok niego): nazwa,
+     ścieżka i SHA-256 pakietu, wersja VMware, jądro, system (`os-release`),
+     pochodzenie źródeł modułów, data builda — z niego działa autodetekcja
+     przy kolejnych aktualizacjach systemu,
    - buduje obraz **erofs** z etykietami SELinux z systemowego
      `file_contexts` (stockowy Bazzite działa w trybie enforcing).
 4. Pokazuje polecenia instalacji albo instaluje od razu przez `pkexec`.
@@ -105,9 +115,10 @@ cargo build --release
   etykiet i tak by nie działał); przy permissive buduje obraz zapasowy bez
   etykiet i wyraźnie to sygnalizuje w panelu wyniku.
 - **Aktualizacja jądra** (rpm-ostree / bootc) unieważnia moduły — po każdej
-  aktualizacji Bazzite zbuduj i zainstaluj obraz ponownie. Jednostka
-  `vmware-modules.service` ma warunek na dokładną wersję jądra, więc po
-  aktualizacji po prostu się nie uruchomi (bez błędów przy starcie).
+  aktualizacji Bazzite uruchom program: wykryje niezgodność i przebuduje
+  obraz jednym kliknięciem. Jednostka `vmware-modules.service` ma warunek
+  na dokładną wersję jądra, więc do czasu przebudowy po prostu się nie
+  uruchomi (bez błędów przy starcie).
 - **Secure Boot:** niepodpisane moduły nie załadują się przy włączonym
   Secure Boot. Klucz Universal Blue (`akmods-ublue`) nie podpisze modułów
   budowanych lokalnie (prywatna część zostaje w CI) — potrzebny własny klucz

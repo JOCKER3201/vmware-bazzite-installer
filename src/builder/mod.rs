@@ -3,6 +3,7 @@
 
 pub mod assets;
 pub mod bundle;
+pub mod installed;
 pub mod kernel;
 pub mod modules;
 pub mod sysext;

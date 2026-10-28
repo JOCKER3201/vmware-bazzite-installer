@@ -268,13 +268,17 @@ fn write_manifest(
     let manifest = format!(
         "# Manifest obrazu vmware.raw — dane do odtworzenia identycznego builda\n\
          bundle={bundle_name}\n\
+         bundle_path={bundle_path}\n\
          bundle_sha256={sha}\n\
          vmware_version={version}\n\
          kernel={kernel}\n\
+         os={os}\n\
          modules_source={source}\n\
          built_utc={date}\n\
          builder=vmware-sysext-builder {builder_version}\n",
+        bundle_path = cfg.bundle.display(),
         kernel = cfg.kernel,
+        os = super::installed::os_label().unwrap_or_else(|| "nieznany".to_string()),
         source = built.source_desc,
         builder_version = env!("CARGO_PKG_VERSION"),
     );
