@@ -88,6 +88,15 @@ sudo systemd-sysext refresh
 ## Budowanie programu
 
 ```sh
+make build        # kompilacja (cargo build --release), bez instalowania
+make install      # instalacja dla użytkownika: ~/.local/bin + wpis w menu
+make uninstall    # usunięcie tego, co zainstalował `make install`
+make package      # samodzielny AppImage (wymaga appimagetool w PATH)
+```
+
+Albo bezpośrednio:
+
+```sh
 cargo build --release
 ./target/release/vmware-sysext-builder
 ```

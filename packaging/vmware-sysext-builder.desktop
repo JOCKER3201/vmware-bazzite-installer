@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Instalator VMware (sysext)
+GenericName=Kreator obrazu systemd-sysext
+Comment=Buduje obraz vmware.raw (systemd-sysext) z pakietu VMware Workstation .bundle — dla Bazzite i innych systemów Fedora Atomic
+Exec=vmware-sysext-builder
+Icon=vmware-sysext-builder
+Terminal=false
+Categories=System;
+Keywords=VMware;sysext;systemd;Bazzite;Fedora;
