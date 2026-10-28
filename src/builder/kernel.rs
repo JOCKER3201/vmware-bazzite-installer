@@ -38,6 +38,12 @@ pub fn detect() -> Vec<KernelInfo> {
             }
             let version = entry.file_name().to_string_lossy().into_owned();
             let devel = path.join("build").join("Makefile").is_file();
+            // Katalog bez kernel/, vmlinuz i build/ to nie zainstalowane jądro,
+            // tylko ślad po scalonym rozszerzeniu (moduły vmmon/vmnet starego
+            // jądra z vmware.raw po aktualizacji systemu) — pomijamy.
+            if !devel && !path.join("kernel").is_dir() && !path.join("vmlinuz").is_file() {
+                continue;
+            }
             let is_running = version == running;
             kernels.push(KernelInfo {
                 version,
@@ -49,4 +55,20 @@ pub fn detect() -> Vec<KernelInfo> {
     // Uruchomione jądro na początku listy, reszta alfabetycznie.
     kernels.sort_by(|a, b| b.running.cmp(&a.running).then(a.version.cmp(&b.version)));
     kernels
+}
+
+#[cfg(test)]
+mod tests {
+    /// Podgląd wykrywania na żywym systemie (ślady po sysextach mają zniknąć):
+    /// `cargo test -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn wykrywanie_jader_na_zywym_systemie() {
+        for kernel in super::detect() {
+            println!(
+                "{} devel={} running={}",
+                kernel.version, kernel.devel, kernel.running
+            );
+        }
+    }
 }
