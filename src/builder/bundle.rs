@@ -1,5 +1,5 @@
-// Obsługa pakietu instalacyjnego VMware (.bundle) — samorozpakowującego się
-// archiwum. Ekstrakcja nie instaluje niczego w systemie.
+// Handling of the VMware installer package (.bundle) — a self-extracting
+// archive. Extraction does not install anything on the system.
 
 use anyhow::{bail, Context, Result};
 use std::ffi::OsStr;
@@ -19,10 +19,10 @@ pub fn extract(
     dest: &Path,
 ) -> Result<PathBuf> {
     if !bundle.is_file() {
-        bail!("Plik {} nie istnieje", bundle.display());
+        bail!("File {} does not exist", bundle.display());
     }
-    // Ekstraktor VMware wymaga, by katalog docelowy NIE istniał
-    // („Directory already exists”) — tworzymy tylko katalog nadrzędny.
+    // The VMware extractor requires the destination directory NOT to exist
+    // ("Directory already exists") — create only the parent directory.
     if dest.exists() {
         fs::remove_dir_all(dest)?;
     }
@@ -37,7 +37,7 @@ pub fn extract(
         "sh",
         [bundle.as_os_str(), OsStr::new("--extract"), dest.as_os_str()],
     )
-    .context("Ekstrakcja pakietu .bundle nie powiodła się")?;
+    .context("Extraction of the .bundle package failed")?;
 
     let mut components: Vec<String> = fs::read_dir(dest)?
         .flatten()
@@ -47,15 +47,15 @@ pub fn extract(
     components.sort();
     if !components.iter().any(|c| c.starts_with("vmware-")) {
         bail!(
-            "Rozpakowany pakiet nie zawiera komponentów vmware-* — \
-             czy to na pewno pełny instalator VMware Workstation dla Linuksa (.bundle)?"
+            "The extracted package contains no vmware-* components — \
+             is this really a full VMware Workstation installer for Linux (.bundle)?"
         );
     }
-    util::log(tx, format!("Znalezione komponenty: {}", components.join(", ")));
+    util::log(tx, format!("Components found: {}", components.join(", ")));
     Ok(dest.to_path_buf())
 }
 
-/// Szuka archiwów źródeł modułów jądra w rozpakowanym pakiecie.
+/// Looks for the kernel module source archives in the extracted package.
 pub fn find_module_tars(extracted: &Path) -> Option<(PathBuf, PathBuf)> {
     let vmmon = util::find_file(extracted, "vmmon.tar")?;
     let vmnet = util::find_file(extracted, "vmnet.tar")?;

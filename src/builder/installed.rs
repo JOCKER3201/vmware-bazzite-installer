@@ -1,16 +1,16 @@
-// Stan zainstalowanego rozszerzenia: odczyt manifestu scalonego obrazu
-// (/usr/share/vmware-sysext/manifest) i porównanie z uruchomionym systemem.
-// Dzięki temu aplikacja sama wykrywa, że system zmienił wersję od czasu
-// builda (np. aktualizacja Bazzite F44 → F45 z nowym jądrem) i potrafi
-// zaproponować przebudowę bez ręcznego wybierania pliku czy jądra.
+// State of the installed extension: reads the manifest of the merged image
+// (/usr/share/vmware-sysext/manifest) and compares it with the running system.
+// This lets the application detect on its own that the system version changed
+// since the build (e.g. a Bazzite F44 → F45 update) and offer a rebuild
+// without manually picking a file or a kernel.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::util;
 
-/// Manifest scalonego obrazu (klucz=wartość, patrz sysext::write_manifest).
-/// Manifesty sprzed wersji 0.2.0 nie mają bundle_path ani os.
+/// Manifest of the merged image (key=value, see sysext::write_manifest).
+/// Manifests from before 0.2.0 have neither bundle_path nor os.
 #[derive(Clone, Debug, Default)]
 pub struct InstalledImage {
     pub bundle_name: String,
@@ -23,8 +23,8 @@ pub struct InstalledImage {
 
 pub const MANIFEST_PATH: &str = "/usr/share/vmware-sysext/manifest";
 
-/// Manifest aktualnie scalonego rozszerzenia — None, gdy rozszerzenie
-/// nie jest zainstalowane/scalone albo manifest jest nieczytelny.
+/// Manifest of the currently merged extension — None when the extension
+/// is not installed/merged or the manifest is unreadable.
 pub fn read() -> Option<InstalledImage> {
     read_from(Path::new(MANIFEST_PATH))
 }
@@ -58,7 +58,7 @@ fn read_from(path: &Path) -> Option<InstalledImage> {
     }
 }
 
-/// Czytelna nazwa systemu z /etc/os-release, np. „Bazzite 45”.
+/// Human-readable system name from /etc/os-release, e.g. "Bazzite 45".
 pub fn os_label() -> Option<String> {
     let text = fs::read_to_string("/etc/os-release").ok()?;
     let mut name = None;
@@ -81,8 +81,8 @@ fn unquote(value: &str) -> String {
     value.trim().trim_matches('"').to_string()
 }
 
-/// Czy dla podanego jądra są scalone moduły VMware? To rozstrzyga, czy
-/// zainstalowany obraz pasuje do uruchomionego systemu.
+/// Are merged VMware modules present for the given kernel? This decides
+/// whether the installed image matches the running system.
 pub fn modules_present(kernel: &str) -> bool {
     Path::new("/usr/lib/modules")
         .join(kernel)
@@ -90,9 +90,9 @@ pub fn modules_present(kernel: &str) -> bool {
         .is_file()
 }
 
-/// Odnajduje pakiet .bundle użyty do poprzedniego builda: najpierw pełna
-/// ścieżka z manifestu, potem plik o tej samej nazwie w katalogu pobrań
-/// (xdg-user-dir DOWNLOAD) i typowych lokalizacjach.
+/// Locates the .bundle package used for the previous build: first the full
+/// path from the manifest, then a file with the same name in the download
+/// directory (xdg-user-dir DOWNLOAD) and in typical locations.
 pub fn locate_bundle(image: &InstalledImage) -> Option<PathBuf> {
     if let Some(path) = &image.bundle_path {
         if path.is_file() {
@@ -109,6 +109,7 @@ pub fn locate_bundle(image: &InstalledImage) -> Option<PathBuf> {
         }
     }
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        // "Pobrane" is the localized (Polish) downloads directory name.
         dirs.push(home.join("Pobrane"));
         dirs.push(home.join("Downloads"));
         dirs.push(home);
@@ -128,30 +129,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parsuje_manifest_nowego_formatu() {
-        let dir = std::env::temp_dir().join("vmware-sysext-test-manifest-nowy");
+    fn parses_new_format_manifest() {
+        let dir = std::env::temp_dir().join("vmware-sysext-test-manifest-new");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("manifest");
         fs::write(
             &path,
-            "# Manifest obrazu vmware.raw — dane do odtworzenia identycznego builda\n\
+            "# vmware.raw image manifest — data to reproduce an identical build\n\
              bundle=VMware-Workstation-Full-25H2-24995812.x86_64.bundle\n\
-             bundle_path=/home/test/Pobrane/VMware-Workstation-Full-25H2-24995812.x86_64.bundle\n\
+             bundle_path=/home/test/Downloads/VMware-Workstation-Full-25H2-24995812.x86_64.bundle\n\
              bundle_sha256=abc\n\
              vmware_version=25H2\n\
              kernel=7.2.11-ogc4.1.fc45.x86_64\n\
              os=Bazzite 45\n\
-             modules_source=archiwa vmmon.tar/vmnet.tar z pakietu .bundle\n\
+             modules_source=vmmon.tar/vmnet.tar archives from the .bundle package\n\
              built_utc=2026-10-28T00:00:00Z\n\
              builder=vmware-sysext-builder 0.2.0\n",
         )
         .unwrap();
-        let image = read_from(&path).expect("manifest powinien się sparsować");
+        let image = read_from(&path).expect("manifest should parse");
         assert_eq!(image.kernel, "7.2.11-ogc4.1.fc45.x86_64");
         assert_eq!(
             image.bundle_path.as_deref(),
             Some(Path::new(
-                "/home/test/Pobrane/VMware-Workstation-Full-25H2-24995812.x86_64.bundle"
+                "/home/test/Downloads/VMware-Workstation-Full-25H2-24995812.x86_64.bundle"
             ))
         );
         assert_eq!(image.os.as_deref(), Some("Bazzite 45"));
@@ -159,23 +160,23 @@ mod tests {
     }
 
     #[test]
-    fn parsuje_manifest_starego_formatu_bez_sciezki_i_os() {
-        let dir = std::env::temp_dir().join("vmware-sysext-test-manifest-stary");
+    fn parses_old_format_manifest_without_path_and_os() {
+        let dir = std::env::temp_dir().join("vmware-sysext-test-manifest-old");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("manifest");
         fs::write(
             &path,
-            "# Manifest obrazu vmware.raw\n\
+            "# vmware.raw image manifest\n\
              bundle=VMware-Workstation-Full-25H2-24995812.x86_64.bundle\n\
              bundle_sha256=abc\n\
              vmware_version=25H2\n\
              kernel=7.2.1-ogc4.1.fc44.x86_64\n\
-             modules_source=archiwa vmmon.tar/vmnet.tar z pakietu .bundle\n\
+             modules_source=vmmon.tar/vmnet.tar archives from the .bundle package\n\
              built_utc=2026-09-05T10:52:18Z\n\
              builder=vmware-sysext-builder 0.1.0\n",
         )
         .unwrap();
-        let image = read_from(&path).expect("stary manifest też powinien się sparsować");
+        let image = read_from(&path).expect("old manifest should parse too");
         assert_eq!(image.kernel, "7.2.1-ogc4.1.fc44.x86_64");
         assert_eq!(image.bundle_path, None);
         assert_eq!(image.os, None);
@@ -187,8 +188,8 @@ mod tests {
     }
 
     #[test]
-    fn manifest_bez_jadra_jest_odrzucany() {
-        let dir = std::env::temp_dir().join("vmware-sysext-test-manifest-pusty");
+    fn manifest_without_kernel_is_rejected() {
+        let dir = std::env::temp_dir().join("vmware-sysext-test-manifest-empty");
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("manifest");
         fs::write(&path, "bundle=x.bundle\n").unwrap();
@@ -196,17 +197,17 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// Weryfikacja na żywym systemie (wymaga zainstalowanego rozszerzenia):
+    /// Verification on a live system (requires the extension to be installed):
     /// `cargo test -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn autodetekcja_na_zywym_systemie() {
-        let image = read().expect("brak scalonego manifestu w /usr");
+    fn autodetection_on_live_system() {
+        let image = read().expect("no merged manifest in /usr");
         println!("manifest: {image:?}");
         let running = util::capture_cmd("uname", ["-r"]).unwrap();
-        println!("uruchomione jądro: {running}");
-        println!("moduły dla uruchomionego jądra: {}", modules_present(&running));
-        println!("odnaleziony bundle: {:?}", locate_bundle(&image));
-        println!("system: {:?}", os_label());
+        println!("running kernel: {running}");
+        println!("modules for the running kernel: {}", modules_present(&running));
+        println!("bundle located: {:?}", locate_bundle(&image));
+        println!("os: {:?}", os_label());
     }
 }

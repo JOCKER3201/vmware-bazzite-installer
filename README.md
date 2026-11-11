@@ -1,63 +1,64 @@
 # vmware-sysext-builder
 
-Graficzny kreator, który z oficjalnego pliku instalacyjnego **VMware Workstation
-dla Linuksa (`.bundle`)** buduje gotowy obraz **`vmware.raw`** dla
-**systemd-sysext** — przeznaczony dla **Bazzite** i innych systemów Fedora
-Atomic (obraz systemu tylko do odczytu). Całość napisana w Rust (egui).
+A graphical wizard that takes the official **VMware Workstation for Linux
+installer (`.bundle`)** and builds a ready-to-use **`vmware.raw`** image for
+**systemd-sysext** — intended for **Bazzite** and other Fedora Atomic systems
+(read-only system image). Written entirely in Rust (egui).
 
-> ⚠ **To NIE jest oficjalny instalator VMware.** Projekt nieoficjalny,
-> w żaden sposób niezwiązany z Broadcom ani VMware — używasz na własną
-> odpowiedzialność.
+> ⚠ **This is NOT an official VMware installer.** An unofficial project,
+> in no way affiliated with Broadcom or VMware — use at your own risk.
 >
-> 🤖 **Stworzony przez sztuczną inteligencję** (Claude, Anthropic) na
-> zlecenie i pod nadzorem właściciela repozytorium.
+> 🤖 **Created by an AI** (Claude, Anthropic) commissioned and supervised
+> by the repository owner.
 
-## Co robi
+## What it does
 
-0. **Sam wykrywa wersję systemu i jądra.** Przy starcie czyta manifest
-   zainstalowanego obrazu (`/usr/share/vmware-sysext/manifest`) i porównuje
-   go z uruchomionym jądrem. Po aktualizacji systemu (np. Bazzite F44 → F45)
-   pokazuje baner, odnajduje poprzednio użyty pakiet `.bundle` (ścieżka
-   z manifestu albo katalog pobrań) i przebudowuje obraz pod bieżące jądro
-   **jednym kliknięciem** — bez ręcznego wybierania czegokolwiek.
-1. **Wskazujesz plik `.bundle`** — pobrany samodzielnie z portalu Broadcom
-   (od listopada 2024 Workstation Pro jest darmowy, także komercyjnie;
-   program nie pobiera niczego z sieci). Przy przebudowie po aktualizacji
-   plik jest już wykryty automatycznie.
-2. **Wykrywa zainstalowane jądra** (`/usr/lib/modules`) i sprawdza obecność
-   nagłówków (`kernel-devel`); domyślnie wybiera jądro uruchomione, a ślady
-   po scalonych rozszerzeniach (katalogi samych modułów vmmon/vmnet starego
-   jądra) pomija.
-   Bazzite ma `gcc`, `make` i dopasowany `kernel-devel` w obrazie bazowym.
-3. Po kliknięciu **„Zbuduj vmware.raw”**:
-   - rozpakowuje `.bundle` poleceniem `sh <bundle> --extract` (bez
-     instalowania czegokolwiek i bez roota),
-   - **kompiluje moduły jądra `vmmon` i `vmnet`** dla wybranej wersji jądra
-     (`make VM_UNAME=<wersja>`); opcjonalnie z łatanych źródeł lub z łatkami
-     AUR (patrz niżej),
-   - składa drzewo `/usr` według sprawdzonego układu pakietu AUR
-     `vmware-workstation` (binaria, biblioteki, dowiązania do appLoadera,
-     bity setuid, pliki .desktop, jednostki systemd),
-   - wyłącza w launcherze test modułów (`vmware-modconfig`), który na
-     systemie z `/usr` tylko do odczytu prowadzi donikąd,
-   - generuje **nadzbiór metadanych `depmod`** (moduły bazowe + vmmon/vmnet),
-     dzięki czemu po scaleniu działa zwykłe `modprobe` i nic nie przesłania
-     modułów bazowych,
-   - **weryfikuje drzewo przed pakowaniem**: struktura (wyłącznie `/usr`),
-     obecność `extension-release`, martwe dowiązania oraz zgodność
-     `vermagic` modułów z jądrem docelowym (`modinfo`),
-   - zapisuje **manifest odtwarzalności** (`/usr/share/vmware-sysext/manifest`
-     w obrazie + kopia `vmware-sysext-manifest.txt` obok niego): nazwa,
-     ścieżka i SHA-256 pakietu, wersja VMware, jądro, system (`os-release`),
-     pochodzenie źródeł modułów, data builda — z niego działa autodetekcja
-     przy kolejnych aktualizacjach systemu,
-   - buduje obraz **erofs** z etykietami SELinux z systemowego
-     `file_contexts` (stockowy Bazzite działa w trybie enforcing).
-4. Pokazuje polecenia instalacji albo instaluje od razu przez `pkexec`.
+0. **Detects the system and kernel version on its own.** On startup it reads
+   the manifest of the installed image (`/usr/share/vmware-sysext/manifest`)
+   and compares it with the running kernel. After a system update (e.g.
+   Bazzite F44 → F45) it shows a banner, locates the previously used
+   `.bundle` package (the path from the manifest or the download directory)
+   and rebuilds the image for the current kernel **with a single click** —
+   no manual picking of anything.
+1. **You select the `.bundle` file** — downloaded yourself from the Broadcom
+   portal (since November 2024 Workstation Pro is free, including for
+   commercial use; the program downloads nothing from the network). When
+   rebuilding after an update, the file is already detected automatically.
+2. **It detects the installed kernels** (`/usr/lib/modules`) and checks for
+   headers (`kernel-devel`); it selects the running kernel by default and
+   skips leftovers of merged extensions (directories containing only the
+   vmmon/vmnet modules of an old kernel).
+   Bazzite ships `gcc`, `make` and a matching `kernel-devel` in the base image.
+3. After clicking **"Build vmware.raw"** it:
+   - extracts the `.bundle` with `sh <bundle> --extract` (without installing
+     anything and without root),
+   - **compiles the `vmmon` and `vmnet` kernel modules** for the selected
+     kernel version (`make VM_UNAME=<version>`); optionally from patched
+     sources or with the AUR patches (see below),
+   - assembles the `/usr` tree following the proven layout of the AUR
+     `vmware-workstation` package (binaries, libraries, appLoader symlinks,
+     setuid bits, .desktop files, systemd units),
+   - disables the module check (`vmware-modconfig`) in the launcher, which
+     leads nowhere on a system with a read-only `/usr`,
+   - generates a **superset of `depmod` metadata** (base modules + vmmon/vmnet),
+     so that after the merge plain `modprobe` works and nothing shadows the
+     base modules,
+   - **verifies the tree before packing**: structure (only `/usr`), presence
+     of `extension-release`, dangling symlinks, and module `vermagic`
+     matching the target kernel (`modinfo`),
+   - writes a **reproducibility manifest** (`/usr/share/vmware-sysext/manifest`
+     inside the image + a `vmware-sysext-manifest.txt` copy next to it):
+     package name, path and SHA-256, VMware version, kernel, system
+     (`os-release`), origin of the module sources, build date — this is what
+     the autodetection uses on subsequent system updates,
+   - builds an **erofs** image with SELinux labels from the system
+     `file_contexts` (stock Bazzite runs in enforcing mode).
+4. It shows the installation commands, or installs right away via `pkexec`.
 
-## Instalacja obrazu
+## Installing the image
 
-Program pokazuje te polecenia po udanym budowaniu (i może je wykonać sam):
+The program shows these commands after a successful build (and can run them
+itself):
 
 ```sh
 sudo install -D -m 0644 vmware.raw /var/lib/extensions/vmware.raw
@@ -67,82 +68,84 @@ sudo systemd-tmpfiles --create /usr/lib/tmpfiles.d/vmware-sysext.conf
 sudo systemctl daemon-reload
 ```
 
-Kolejność jest istotna: `--no-reload` odracza start usług do momentu,
-aż `tmpfiles` zasieje `/etc/vmware` — dopiero `daemon-reload` uruchamia
-usługi (drop-in `Upholds=`).
+The order matters: `--no-reload` defers the service startup until `tmpfiles`
+has seeded `/etc/vmware` — only `daemon-reload` starts the services (the
+`Upholds=` drop-in).
 
-To wszystko — obraz zawiera drop-in `Upholds=` dla `multi-user.target`,
-więc usługi (ładowanie modułów, sieci vmnet, arbiter USB) startują
-automatycznie po scaleniu i po każdym rozruchu. `systemd-sysext.service`
-jest na Bazzite domyślnie włączone, więc scalenie przetrwa restart.
-Katalog `/etc/vmware` jest zasiewany przez `tmpfiles.d` (typ `C+` — nigdy
-nie nadpisuje Twoich zmian). Potem wystarczy uruchomić `vmware`.
+That is all — the image ships an `Upholds=` drop-in for `multi-user.target`,
+so the services (module loading, vmnet networks, the USB arbitrator) start
+automatically after the merge and on every boot. `systemd-sysext.service`
+is enabled by default on Bazzite, so the merge survives a reboot.
+The `/etc/vmware` directory is seeded by `tmpfiles.d` (type `C+` — it never
+overwrites your changes). After that, just run `vmware`.
 
-Odinstalowanie:
+Uninstalling:
 
 ```sh
 sudo rm /var/lib/extensions/vmware.raw
 sudo systemd-sysext refresh
 ```
 
-## Budowanie programu
+## Building the program
 
 ```sh
-make build        # kompilacja (cargo build --release), bez instalowania
-make install      # instalacja dla użytkownika: ~/.local/bin + wpis w menu
-make uninstall    # usunięcie tego, co zainstalował `make install`
-make package      # samodzielny AppImage (wymaga appimagetool w PATH)
+make build        # compile (cargo build --release), installs nothing
+make install      # per-user installation: ~/.local/bin + menu entry
+make uninstall    # remove what `make install` installed
+make package      # self-contained AppImage (requires appimagetool in PATH)
 ```
 
-Albo bezpośrednio:
+Or directly:
 
 ```sh
 cargo build --release
 ./target/release/vmware-sysext-builder
 ```
 
-## Zgodność wersji i łatki
+## Version compatibility and patches
 
-- **Zalecane pakiety: 25H2 / 26H1** (nowe nazewnictwo roczne Broadcom) —
-  ich źródła modułów budują się bez łatek na jądrach 7.x.
-- **Pakiety 17.6.x nie kompilują się** na jądrach ≥ 6.15 bez łatek
-  społeczności; dla jąder 7.x praktycznie wymagany jest pakiet 25H2/26H1.
-- Gdy kompilacja się nie powiedzie, w „Opcjach zaawansowanych” wskaż katalog:
-  - ze **źródłami forka** `vmware-host-modules` (układ `vmmon-only/` i
-    `vmnet-only/`), np. `philipl/vmware-host-modules` (gałęzie
-    `workstation-25h2`, `workstation-26h1`), albo
-  - z **łatkami** `vmmon.patch` / `vmnet.patch` (np. checkout pakietu AUR
-    `vmware-workstation` — lustro: `github.com/archlinux/aur`, gałąź
-    `vmware-workstation`) — zostaną nałożone `patch -p2` na źródła z pakietu.
-- Moduły są sprzężone z wersją produktu (odmawiają załadowania przy
-  niezgodności) — używaj źródeł/łatek dla tej samej wersji co `.bundle`.
+- **Recommended packages: 25H2 / 26H1** (Broadcom's new year-based naming) —
+  their module sources build without patches on 7.x kernels.
+- **17.6.x packages do not compile** on kernels ≥ 6.15 without community
+  patches; for 7.x kernels a 25H2/26H1 package is practically required.
+- When compilation fails, point "Advanced options" at a directory:
+  - with the **sources of a `vmware-host-modules` fork** (`vmmon-only/` and
+    `vmnet-only/` layout), e.g. `philipl/vmware-host-modules` (branches
+    `workstation-25h2`, `workstation-26h1`), or
+  - with the **patches** `vmmon.patch` / `vmnet.patch` (e.g. a checkout of
+    the AUR `vmware-workstation` package — mirror: `github.com/archlinux/aur`,
+    branch `vmware-workstation`) — they will be applied with `patch -p2`
+    to the package sources.
+- The modules are coupled to the product version (they refuse to load on a
+  mismatch) — use sources/patches for the same version as the `.bundle`.
 
-## Ważne uwagi
+## Important notes
 
-- **Etykiety SELinux:** gdy budowa obrazu z etykietami się nie powiedzie,
-  program na systemie w trybie enforcing przerywa z błędem (obraz bez
-  etykiet i tak by nie działał); przy permissive buduje obraz zapasowy bez
-  etykiet i wyraźnie to sygnalizuje w panelu wyniku.
-- **Aktualizacja jądra** (rpm-ostree / bootc) unieważnia moduły — po każdej
-  aktualizacji Bazzite uruchom program: wykryje niezgodność i przebuduje
-  obraz jednym kliknięciem. Jednostka `vmware-modules.service` ma warunek
-  na dokładną wersję jądra, więc do czasu przebudowy po prostu się nie
-  uruchomi (bez błędów przy starcie).
-- **Secure Boot:** niepodpisane moduły nie załadują się przy włączonym
-  Secure Boot. Klucz Universal Blue (`akmods-ublue`) nie podpisze modułów
-  budowanych lokalnie (prywatna część zostaje w CI) — potrzebny własny klucz
-  MOK zarejestrowany przez `mokutil --import`. Program potrafi podpisać
-  moduły wskazanym kluczem i certyfikatem (opcje zaawansowane).
-- Obraz **nie zawiera** komponentów `vmware-installer`, VIX, ovftool ani
-  vprobe (zbędne do codziennej pracy; mniejszy obraz).
-- Program **nie pobiera ani nie rozprowadza** oprogramowania VMware — obraz
-  budowany jest lokalnie z pliku dostarczonego przez użytkownika i zawiera
-  oprogramowanie objęte licencją Broadcom/VMware; nie rozpowszechniaj go.
-- VMware i VMware Workstation są znakami towarowymi Broadcom Inc. Ten projekt
-  nie jest powiązany z Broadcom.
+- **SELinux labels:** when building the labeled image fails, the program
+  aborts with an error on a system in enforcing mode (an unlabeled image
+  would not work anyway); on permissive it builds an unlabeled fallback
+  image and clearly flags that in the result panel.
+- **A kernel update** (rpm-ostree / bootc) invalidates the modules — after
+  every Bazzite update run the program: it detects the mismatch and rebuilds
+  the image with one click. The `vmware-modules.service` unit has a condition
+  on the exact kernel version, so until the rebuild it simply does not start
+  (no errors at boot).
+- **Secure Boot:** unsigned modules will not load with Secure Boot enabled.
+  The Universal Blue key (`akmods-ublue`) cannot sign locally built modules
+  (the private part stays in CI) — you need your own MOK key enrolled with
+  `mokutil --import`. The program can sign the modules with the key and
+  certificate you point it at (advanced options).
+- The image **does not include** the `vmware-installer`, VIX, ovftool or
+  vprobe components (not needed for everyday use; smaller image).
+- The program **neither downloads nor distributes** VMware software — the
+  image is built locally from a file supplied by the user and contains
+  software covered by the Broadcom/VMware license; do not redistribute it.
+- VMware and VMware Workstation are trademarks of Broadcom Inc. This project
+  is not affiliated with Broadcom.
 
-## Licencja
+## License
 
-Kod tego narzędzia: [MIT](LICENSE). Układ instalacji odtworzono na podstawie
-faktów z pakietu AUR `vmware-workstation` i pakietu NixOS (bez kopiowania
-kodu); wzorce sysext według projektów fedora-sysexts i Flatcar.
+The code of this tool: [MIT](LICENSE). The installation layout was
+reconstructed from the facts of the AUR `vmware-workstation` package and the
+NixOS package (no code copied); the sysext patterns follow the
+fedora-sysexts and Flatcar projects.

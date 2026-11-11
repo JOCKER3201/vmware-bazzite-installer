@@ -1,5 +1,5 @@
-// vmware-sysext-builder — graficzny kreator obrazu systemd-sysext z pakietu
-// VMware Workstation (.bundle) dla systemów Fedora Atomic (Bazzite).
+// vmware-sysext-builder — graphical builder of a systemd-sysext image from a
+// VMware Workstation package (.bundle) for Fedora Atomic systems (Bazzite).
 
 mod app;
 mod builder;
@@ -12,7 +12,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1020.0, 740.0])
             .with_min_inner_size([840.0, 560.0])
-            .with_title("Instalator VMware — systemd-sysext (Bazzite)"),
+            .with_title("VMware Installer — systemd-sysext (Bazzite)"),
         ..Default::default()
     };
     eframe::run_native(

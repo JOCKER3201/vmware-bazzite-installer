@@ -1,5 +1,5 @@
-// Narzędzia pomocnicze: uruchamianie poleceń ze strumieniowaniem logu do GUI
-// oraz operacje na drzewach plików.
+// Helper utilities: running commands with log streaming to the GUI
+// and file-tree operations.
 
 use anyhow::{bail, Context, Result};
 use std::ffi::{OsStr, OsString};
@@ -21,8 +21,8 @@ pub fn log(tx: &Sender<BuildEvent>, msg: impl Into<String>) {
     let _ = tx.send(BuildEvent::Log(msg.into()));
 }
 
-/// Uruchamia polecenie, przekazując stdout/stderr linia po linii do dziennika.
-/// Po ustawieniu flagi anulowania proces jest zabijany.
+/// Runs a command, forwarding its stdout/stderr to the log line by line.
+/// Once the cancel flag is set, the process is killed.
 pub fn run_cmd<I, S>(
     tx: &Sender<BuildEvent>,
     cancel: &Arc<AtomicBool>,
@@ -51,8 +51,8 @@ where
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        // Własna grupa procesów: anulowanie musi objąć też wnuki
-        // (kompilatory spawnowane przez make, ekstraktor pakietu itp.).
+        // Own process group: cancellation must also reach grandchildren
+        // (compilers spawned by make, the package extractor, etc.).
         .process_group(0);
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
@@ -62,7 +62,7 @@ where
     }
     let mut child = cmd
         .spawn()
-        .with_context(|| format!("Nie udało się uruchomić `{program}` — czy jest zainstalowane?"))?;
+        .with_context(|| format!("Failed to run `{program}` — is it installed?"))?;
 
     let mut readers: Vec<thread::JoinHandle<()>> = Vec::new();
     if let Some(stream) = child.stdout.take() {
@@ -92,10 +92,10 @@ where
         let _ = handle.join();
     }
     if cancelled {
-        bail!("Budowanie przerwane przez użytkownika");
+        bail!("Build cancelled by the user");
     }
     if !status.success() {
-        bail!("Polecenie zakończyło się błędem ({status}): {shown}");
+        bail!("Command failed ({status}): {shown}");
     }
     Ok(())
 }
@@ -119,8 +119,8 @@ fn pipe_to_log(tx: Sender<BuildEvent>, stream: impl Read + Send + 'static) -> th
     })
 }
 
-/// Uruchamia polecenie i zwraca jego stdout (przycięty) — do krótkich
-/// odczytów typu modinfo/sha256sum, bez strumieniowania do dziennika.
+/// Runs a command and returns its stdout (trimmed) — for short reads
+/// like modinfo/sha256sum, without streaming to the log.
 pub fn capture_cmd<I, S>(program: &str, args: I) -> Result<String>
 where
     I: IntoIterator<Item = S>,
@@ -130,10 +130,10 @@ where
         .args(args)
         .stdin(Stdio::null())
         .output()
-        .with_context(|| format!("Nie udało się uruchomić `{program}`"))?;
+        .with_context(|| format!("Failed to run `{program}`"))?;
     if !output.status.success() {
         bail!(
-            "Polecenie `{program}` zakończyło się błędem ({}): {}",
+            "Command `{program}` failed ({}): {}",
             output.status,
             String::from_utf8_lossy(&output.stderr).trim()
         );
@@ -141,7 +141,7 @@ where
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Wersja VMware z nazwy pliku typu
+/// VMware version from a file name like
 /// VMware-Workstation-Full-25H2-24995812.x86_64.bundle → "25H2".
 pub fn guess_bundle_version(name: &str) -> Option<String> {
     let rest = name.split("VMware-Workstation-Full-").nth(1)?;
@@ -153,7 +153,7 @@ pub fn guess_bundle_version(name: &str) -> Option<String> {
     }
 }
 
-/// Czy program o danej nazwie jest dostępny w PATH?
+/// Is a program with the given name available in PATH?
 pub fn cmd_exists(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|path| {
@@ -167,13 +167,13 @@ pub fn cmd_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Kopiuje drzewo plików z zachowaniem uprawnień plików i dowiązań
-/// symbolicznych. Zawartość katalogu źródłowego jest scalana z docelowym.
-/// Katalogi powstają z bieżącym umask — przed pakowaniem obrazu drzewo
-/// przechodzi przez normalize_dir_modes.
+/// Copies a file tree, preserving file permissions and symbolic links.
+/// The contents of the source directory are merged into the destination.
+/// Directories are created with the current umask — the tree goes through
+/// normalize_dir_modes before the image is packed.
 pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(src)
-        .with_context(|| format!("Brak dostępu do {}", src.display()))?;
+        .with_context(|| format!("Cannot access {}", src.display()))?;
     let file_type = meta.file_type();
     if file_type.is_dir() {
         fs::create_dir_all(dst)?;
@@ -188,31 +188,31 @@ pub fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
         }
         let _ = fs::remove_file(dst);
         symlink(&target, dst)
-            .with_context(|| format!("Dowiązanie {} → {}", dst.display(), target.display()))?;
+            .with_context(|| format!("Symlinking {} → {}", dst.display(), target.display()))?;
     } else {
         if let Some(parent) = dst.parent() {
             fs::create_dir_all(parent)?;
         }
         fs::copy(src, dst)
-            .with_context(|| format!("Kopiowanie {} → {}", src.display(), dst.display()))?;
+            .with_context(|| format!("Copying {} → {}", src.display(), dst.display()))?;
     }
     Ok(())
 }
 
-/// Zapisuje plik tekstowy z podanymi uprawnieniami, tworząc katalogi nadrzędne.
+/// Writes a text file with the given permissions, creating parent directories.
 pub fn write_file(path: &Path, content: &str, mode: u32) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, content).with_context(|| format!("Zapis {}", path.display()))?;
+    fs::write(path, content).with_context(|| format!("Writing {}", path.display()))?;
     fs::set_permissions(path, fs::Permissions::from_mode(mode))?;
     Ok(())
 }
 
-/// Podmienia wszystkie wystąpienia tekstu w pliku (bezpiecznie bajtowo).
-/// Zwraca true, gdy dokonano zmiany. Tryb pliku zostaje zachowany.
+/// Replaces all occurrences of a string in a file (byte-safe).
+/// Returns true when a change was made. The file mode is preserved.
 pub fn replace_in_file(path: &Path, from: &str, to: &str) -> Result<bool> {
-    let data = fs::read(path).with_context(|| format!("Odczyt {}", path.display()))?;
+    let data = fs::read(path).with_context(|| format!("Reading {}", path.display()))?;
     let needle = from.as_bytes();
     if needle.is_empty() || !data.windows(needle.len()).any(|w| w == needle) {
         return Ok(false);
@@ -228,11 +228,11 @@ pub fn replace_in_file(path: &Path, from: &str, to: &str) -> Result<bool> {
             i += 1;
         }
     }
-    fs::write(path, output).with_context(|| format!("Zapis {}", path.display()))?;
+    fs::write(path, output).with_context(|| format!("Writing {}", path.display()))?;
     Ok(true)
 }
 
-/// Szuka rekurencyjnie pierwszego pliku o podanej nazwie.
+/// Recursively finds the first file with the given name.
 pub fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
     let mut dirs = Vec::new();
@@ -255,8 +255,8 @@ pub fn find_file(root: &Path, name: &str) -> Option<PathBuf> {
     None
 }
 
-/// „Farma dowiązań”: lustro drzewa, w którym katalogi są prawdziwe,
-/// a każdy plik to dowiązanie do oryginału (na potrzeby depmod).
+/// "Symlink farm": a mirror of a tree in which directories are real
+/// and every file is a symlink to the original (for depmod).
 pub fn symlink_farm(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -273,9 +273,9 @@ pub fn symlink_farm(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Ustawia 0755 na wszystkich katalogach drzewa — uniezależnia obraz od
-/// umask użytkownika (przy umask 077 katalogi byłyby 0700 i po scaleniu
-/// zwykły użytkownik nie mógłby wejść do /usr/lib/vmware).
+/// Sets 0755 on all directories of the tree — makes the image independent
+/// of the user's umask (with umask 077 directories would be 0700 and, after
+/// merging, a regular user could not enter /usr/lib/vmware).
 pub fn normalize_dir_modes(root: &Path) -> Result<()> {
     let meta = fs::symlink_metadata(root)?;
     if !meta.is_dir() {

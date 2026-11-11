@@ -1,8 +1,8 @@
-// Składanie drzewa rozszerzenia systemd-sysext (/usr), wyliczanie metadanych
-// modułów (depmod — nadzbiór bazowych + naszych) i budowa obrazu vmware.raw.
+// Assembly of the systemd-sysext extension tree (/usr), computation of module
+// metadata (depmod — superset of base + ours) and building of the vmware.raw image.
 //
-// Mapowanie komponentów odwzorowuje sprawdzony ręczny układ instalacji
-// z pakietu AUR vmware-workstation (potwierdzony niezależnie w NixOS).
+// The component mapping mirrors the proven manual installation layout
+// from the AUR vmware-workstation package (independently confirmed in NixOS).
 
 use anyhow::{bail, Context, Result};
 use std::ffi::{OsStr, OsString};
@@ -16,17 +16,17 @@ use std::sync::Arc;
 use crate::builder::{assets, modules::BuiltModules, BuildConfig, BuildEvent};
 use crate::util;
 
-/// Mapowanie: (nazwa komponentu, podkatalog/plik w komponencie, katalog docelowy).
-/// Zawartość katalogu źródłowego jest scalana z docelowym; pojedynczy plik
-/// trafia do wnętrza katalogu docelowego.
+/// Mapping: (component name, subdirectory/file within the component, destination directory).
+/// The contents of a source directory are merged into the destination; a single
+/// file goes inside the destination directory.
 const MAP_RULES: &[(&str, &str, &str)] = &[
-    // aplikacja główna
+    // main application
     ("vmware-workstation", "bin", "usr/bin"),
     ("vmware-workstation", "lib", "usr/lib/vmware"),
     ("vmware-workstation", "share", "usr/share"),
     ("vmware-workstation", "man", "usr/share/man"),
     ("vmware-workstation", "doc", "usr/share/doc/vmware-workstation"),
-    // dodatkowe aplikacje: 25H2+ „vmware-other-apps”, w 17.6.x „vmware-player-app”
+    // extra applications: "vmware-other-apps" in 25H2+, "vmware-player-app" in 17.6.x
     ("vmware-other-apps", "bin", "usr/bin"),
     ("vmware-other-apps", "lib", "usr/lib/vmware"),
     ("vmware-other-apps", "share", "usr/share"),
@@ -36,19 +36,19 @@ const MAP_RULES: &[(&str, &str, &str)] = &[
     ("vmware-player-app", "share", "usr/share"),
     ("vmware-player-app", "doc", "usr/share/doc/vmware-workstation"),
     ("vmware-player-setup", "vmware-config", "usr/lib/vmware/setup"),
-    // silnik maszyn wirtualnych (sbin → /usr/bin: tam mieszka vmware-authd)
+    // virtual machine engine (sbin → /usr/bin: that is where vmware-authd lives)
     ("vmware-vmx", "bin", "usr/bin"),
     ("vmware-vmx", "sbin", "usr/bin"),
     ("vmware-vmx", "lib", "usr/lib/vmware"),
     ("vmware-vmx", "roms", "usr/lib/vmware/roms"),
-    // edytor sieci i arbiter USB (lib edytora scala się z /usr/lib/vmware/lib,
-    // nie z /usr/lib/vmware — tak robi AUR i NixOS)
+    // network editor and USB arbitrator (the editor's lib merges into
+    // /usr/lib/vmware/lib, not /usr/lib/vmware — this is what AUR and NixOS do)
     ("vmware-network-editor", "lib", "usr/lib/vmware/lib"),
     ("vmware-network-editor-ui", "share", "usr/share"),
     ("vmware-usbarbitrator", "bin", "usr/lib/vmware/bin"),
 ];
 
-/// Komponenty świadomie pomijane w minimalnym obrazie.
+/// Components deliberately omitted from the minimal image.
 const SKIPPED_COMPONENTS: &[&str] = &[
     "vmware-installer",
     "vmware-vix-core",
@@ -56,7 +56,7 @@ const SKIPPED_COMPONENTS: &[&str] = &[
     "vmware-vprobe",
 ];
 
-/// Pliki z bitem setuid — dokładnie jak w oficjalnej instalacji VMware.
+/// Files with the setuid bit — exactly as in the official VMware installation.
 const SUID_BINARIES: &[&str] = &[
     "usr/bin/vmware-authd",
     "usr/lib/vmware/bin/vmware-vmx",
@@ -64,8 +64,8 @@ const SUID_BINARIES: &[&str] = &[
     "usr/lib/vmware/bin/vmware-vmx-stats",
 ];
 
-/// Nazwy w /usr/lib/vmware/bin będące dowiązaniami do appLoadera
-/// (appLoader rozpoznaje program po argv[0]).
+/// Names in /usr/lib/vmware/bin that are symlinks to appLoader
+/// (appLoader recognizes the program by argv[0]).
 const APPLOADER_LINKS: &[&str] = &[
     "licenseTool",
     "vmware",
@@ -84,7 +84,7 @@ const APPLOADER_LINKS: &[&str] = &[
     "vmware-zenity",
 ];
 
-/// Dowiązania w /usr/bin.
+/// Symlinks in /usr/bin.
 const USR_BIN_LINKS: &[(&str, &str)] = &[
     ("vmrest", "/usr/lib/vmware/bin/appLoader"),
     ("vmware-fuseUI", "/usr/lib/vmware/bin/vmware-fuseUI"),
@@ -93,15 +93,15 @@ const USR_BIN_LINKS: &[(&str, &str)] = &[
     ("vmware-usbarbitrator", "/usr/lib/vmware/bin/vmware-usbarbitrator"),
 ];
 
-/// Uzupełnienie @@BINARY@@ w plikach .desktop.
+/// Fills in @@BINARY@@ in .desktop files.
 const DESKTOP_BINARIES: &[(&str, &str)] = &[
     ("vmware-workstation.desktop", "/usr/bin/vmware"),
     ("vmware-netcfg.desktop", "/usr/bin/vmware-netcfg"),
     ("vmware-player.desktop", "/usr/bin/vmplayer"),
 ];
 
-/// StartupWMClass dla plików .desktop — bez tego pasek zadań nie łączy
-/// okien VMware z aktywatorem (osobna, generyczna ikona).
+/// StartupWMClass for .desktop files — without it the taskbar does not
+/// associate VMware windows with the launcher (separate, generic icon).
 const DESKTOP_WMCLASS: &[(&str, &str)] = &[
     ("vmware-workstation.desktop", "vmware"),
     ("vmware-netcfg.desktop", "vmware-netcfg"),
@@ -120,7 +120,7 @@ pub fn assemble(
 
     for entry in fs::read_dir(extracted)?.flatten() {
         if cancel.load(Ordering::Relaxed) {
-            bail!("Budowanie przerwane przez użytkownika");
+            bail!("Build cancelled by the user");
         }
         let component = entry.file_name().to_string_lossy().into_owned();
         let comp_path = entry.path();
@@ -131,11 +131,11 @@ pub fn assemble(
         if SKIPPED_COMPONENTS.contains(&component.as_str())
             || component.starts_with("vmware-vix-lib")
         {
-            util::log(tx, format!("Pomijam komponent {component} (zbędny w obrazie)"));
+            util::log(tx, format!("Skipping component {component} (not needed in the image)"));
             continue;
         }
 
-        // Obrazy ISO narzędzi dla systemów-gości.
+        // ISO images of the guest OS tools.
         if component.starts_with("vmware-tools-") {
             let iso_dir = staging.join("usr/lib/vmware/isoimages");
             for file in fs::read_dir(&comp_path)?.flatten() {
@@ -169,10 +169,10 @@ pub fn assemble(
     }
 
     if !mapped_any {
-        bail!("Nie udało się zmapować żadnego komponentu — nieoczekiwany układ pakietu");
+        bail!("Failed to map any component — unexpected package layout");
     }
 
-    // Pliki specjalne z komponentu vmware-vmx.
+    // Special files from the vmware-vmx component.
     let vmx = extracted.join("vmware-vmx");
     let modules_xml = vmx.join("extra/modules.xml");
     if modules_xml.is_file() {
@@ -191,18 +191,19 @@ pub fn assemble(
         fuse_conf = true;
     }
 
-    // Nie wozimy archiwów źródeł modułów — moduły są już skompilowane,
-    // a obecność źródeł kusiłaby vmware-modconfig do przebudowy na RO /usr.
+    // Do not ship the module source archives — the modules are already compiled,
+    // and the presence of sources would tempt vmware-modconfig to rebuild them
+    // on a read-only /usr.
     let module_sources = staging.join("usr/lib/vmware/modules/source");
     if module_sources.exists() {
         fs::remove_dir_all(&module_sources)?;
-        util::log(tx, "Usunięto /usr/lib/vmware/modules/source (zbędne archiwa źródeł)");
+        util::log(tx, "Removed /usr/lib/vmware/modules/source (unneeded source archives)");
     }
 
     ensure_exec_bits(&staging.join("usr/bin"))?;
     ensure_exec_bits(&staging.join("usr/lib/vmware/bin"))?;
     ensure_exec_bits(&staging.join("usr/lib/vmware/setup"))?;
-    // Pomocnik podnoszenia uprawnień (vmware-gksu) bywa rozpakowany bez bitu exec.
+    // The privilege-elevation helper (vmware-gksu) is sometimes unpacked without the exec bit.
     let gksu_helper = staging.join("usr/lib/vmware/lib/libvmware-gksu.so/gksu-run-helper");
     if gksu_helper.is_file() {
         fs::set_permissions(&gksu_helper, fs::Permissions::from_mode(0o755))?;
@@ -219,7 +220,7 @@ pub fn assemble(
     create_symlinks(tx, staging)?;
     substitute_placeholders(tx, staging)?;
 
-    // Skompilowane moduły jądra.
+    // The compiled kernel modules.
     let misc = staging
         .join("usr/lib/modules")
         .join(&cfg.kernel)
@@ -228,14 +229,14 @@ pub fn assemble(
     for module in [&built.vmmon, &built.vmnet] {
         let name = module
             .file_name()
-            .context("Ścieżka modułu bez nazwy pliku")?;
+            .context("Module path has no file name")?;
         let dest = misc.join(name);
         fs::copy(module, &dest)?;
         fs::set_permissions(&dest, fs::Permissions::from_mode(0o644))?;
     }
     util::log(
         tx,
-        format!("Moduły umieszczone w /usr/lib/modules/{}/misc", cfg.kernel),
+        format!("Modules placed in /usr/lib/modules/{}/misc", cfg.kernel),
     );
 
     write_own_files(tx, staging, fuse_conf)?;
@@ -243,9 +244,10 @@ pub fn assemble(
     Ok(())
 }
 
-/// Manifest odtwarzalności (metodologia z SYSEXT-BUILD-GUIDE.md, pkt 7):
-/// dokładne wersje i pochodzenie składników w jednym miejscu — „odtwórz
-/// obraz” ma być wykonaniem przepisu, nie odtwarzaniem sesji z pamięci.
+/// Reproducibility manifest (methodology from SYSEXT-BUILD-GUIDE.md, item 7):
+/// exact versions and the origin of all ingredients in one place — "reproduce
+/// the image" should mean executing a recipe, not reconstructing a session
+/// from memory.
 fn write_manifest(
     tx: &Sender<BuildEvent>,
     cfg: &BuildConfig,
@@ -258,15 +260,15 @@ fn write_manifest(
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
     let version =
-        util::guess_bundle_version(&bundle_name).unwrap_or_else(|| "nieznana".to_string());
-    util::log(tx, "Liczę sumę SHA-256 pakietu .bundle (manifest)…");
+        util::guess_bundle_version(&bundle_name).unwrap_or_else(|| "unknown".to_string());
+    util::log(tx, "Computing the SHA-256 of the .bundle package (manifest)…");
     let sha = util::capture_cmd("sha256sum", [cfg.bundle.as_os_str()])
         .ok()
         .and_then(|out| out.split_whitespace().next().map(str::to_string))
-        .unwrap_or_else(|| "nieznana".to_string());
+        .unwrap_or_else(|| "unknown".to_string());
     let date = util::capture_cmd("date", ["-u", "+%Y-%m-%dT%H:%M:%SZ"]).unwrap_or_default();
     let manifest = format!(
-        "# Manifest obrazu vmware.raw — dane do odtworzenia identycznego builda\n\
+        "# vmware.raw image manifest — data to reproduce an identical build\n\
          bundle={bundle_name}\n\
          bundle_path={bundle_path}\n\
          bundle_sha256={sha}\n\
@@ -278,7 +280,7 @@ fn write_manifest(
          builder=vmware-sysext-builder {builder_version}\n",
         bundle_path = cfg.bundle.display(),
         kernel = cfg.kernel,
-        os = super::installed::os_label().unwrap_or_else(|| "nieznany".to_string()),
+        os = super::installed::os_label().unwrap_or_else(|| "unknown".to_string()),
         source = built.source_desc,
         builder_version = env!("CARGO_PKG_VERSION"),
     );
@@ -290,29 +292,29 @@ fn write_manifest(
     Ok(())
 }
 
-/// Weryfikacja przed pakowaniem („weryfikuj przez narzędzia, nie przez
-/// pamięć”): struktura obrazu, martwe dowiązania (odpowiednik
-/// `find . -xtype l`), zgodność vermagic modułów z jądrem docelowym.
+/// Pre-packing verification ("verify with tools, not from memory"):
+/// image structure, dangling symlinks (equivalent of `find . -xtype l`),
+/// module vermagic matching the target kernel.
 pub fn verify(tx: &Sender<BuildEvent>, staging: &Path, kernel: &str) -> Result<()> {
-    // 1. Sysext obejmuje wyłącznie /usr — nic innego na szczycie drzewa.
+    // 1. A sysext covers only /usr — nothing else at the top of the tree.
     for entry in fs::read_dir(staging)?.flatten() {
         if entry.file_name() != "usr" {
             bail!(
-                "Nieoczekiwany wpis najwyższego poziomu w drzewie obrazu: {} — \
-                 sysext może zawierać wyłącznie usr/",
+                "Unexpected top-level entry in the image tree: {} — \
+                 a sysext may contain only usr/",
                 entry.path().display()
             );
         }
     }
 
-    // 2. Bez extension-release scalenie po cichu pominęłoby obraz.
+    // 2. Without extension-release the merge would silently skip the image.
     let release = staging.join("usr/lib/extension-release.d/extension-release.vmware");
     if !release.is_file() {
-        bail!("Brak {} — obraz nie zostałby scalony", release.display());
+        bail!("Missing {} — the image would not be merged", release.display());
     }
 
-    // 3. Martwe dowiązania. Cele bezwzględne poza /usr (np. /etc/vmware/…)
-    //    mogą powstać dopiero w czasie działania — tylko informujemy.
+    // 3. Dangling symlinks. Absolute targets outside /usr (e.g. /etc/vmware/…)
+    //    may come into existence only at runtime — informational only.
     let mut dangling: Vec<(PathBuf, PathBuf)> = Vec::new();
     scan_symlinks(staging, staging, &mut dangling)?;
     let mut serious = 0usize;
@@ -324,24 +326,24 @@ pub fn verify(tx: &Sender<BuildEvent>, staging: &Path, kernel: &str) -> Result<(
         util::log(
             tx,
             format!(
-                "Martwe dowiązanie: {} → {}{}",
+                "Dangling symlink: {} → {}{}",
                 link.strip_prefix(staging).unwrap_or(link).display(),
                 target.display(),
                 if inside_usr {
                     ""
                 } else {
-                    "  (cel poza /usr — może powstać w czasie działania)"
+                    "  (target outside /usr — may come into existence at runtime)"
                 }
             ),
         );
     }
     if serious > 0 {
         let _ = tx.send(BuildEvent::Warning(format!(
-            "Wykryto martwe dowiązania wewnątrz /usr: {serious} — szczegóły w dzienniku"
+            "Dangling symlinks detected inside /usr: {serious} — see the log for details"
         )));
     }
 
-    // 4. vermagic modułów musi zaczynać się od wersji jądra docelowego.
+    // 4. Module vermagic must start with the target kernel version.
     for name in ["vmmon.ko", "vmnet.ko"] {
         let ko = staging
             .join("usr/lib/modules")
@@ -352,12 +354,12 @@ pub fn verify(tx: &Sender<BuildEvent>, staging: &Path, kernel: &str) -> Result<(
             "modinfo",
             [OsStr::new("-F"), OsStr::new("vermagic"), ko.as_os_str()],
         )
-        .with_context(|| format!("Nie udało się odczytać vermagic z {name}"))?;
+        .with_context(|| format!("Failed to read vermagic from {name}"))?;
         let built_for = vermagic.split_whitespace().next().unwrap_or("");
         if built_for != kernel {
             bail!(
-                "Moduł {name} jest zbudowany dla jądra „{built_for}”, a obraz celuje \
-                 w „{kernel}” — niezgodność vermagic"
+                "Module {name} is built for kernel \"{built_for}\" while the image \
+                 targets \"{kernel}\" — vermagic mismatch"
             );
         }
         util::log(tx, format!("vermagic {name}: {vermagic} ✓"));
@@ -366,14 +368,14 @@ pub fn verify(tx: &Sender<BuildEvent>, staging: &Path, kernel: &str) -> Result<(
     util::log(
         tx,
         format!(
-            "Weryfikacja zakończona: struktura OK, vermagic OK, martwe dowiązania: {}",
+            "Verification finished: structure OK, vermagic OK, dangling symlinks: {}",
             dangling.len()
         ),
     );
     Ok(())
 }
 
-/// Lexykalna normalizacja ścieżki (składa `..` i `.` bez dotykania dysku).
+/// Lexical path normalization (folds `..` and `.` without touching the disk).
 fn normalize_lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for component in path.components() {
@@ -388,8 +390,8 @@ fn normalize_lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// Zbiera dowiązania, których cel nie istnieje ani w drzewie obrazu,
-/// ani (dla celów bezwzględnych) w systemie bazowym.
+/// Collects symlinks whose target exists neither in the image tree
+/// nor (for absolute targets) on the base system.
 fn scan_symlinks(
     root: &Path,
     dir: &Path,
@@ -418,7 +420,7 @@ fn scan_symlinks(
     Ok(())
 }
 
-/// Zwykłe pliki w katalogach z programami muszą być wykonywalne.
+/// Regular files in program directories must be executable.
 fn ensure_exec_bits(dir: &Path) -> Result<()> {
     if !dir.is_dir() {
         return Ok(());
@@ -447,7 +449,7 @@ fn create_symlinks(tx: &Sender<BuildEvent>, staging: &Path) -> Result<()> {
                 symlink("appLoader", &link)?;
             }
         }
-        util::log(tx, "Utworzono dowiązania appLoader w /usr/lib/vmware/bin");
+        util::log(tx, "Created appLoader symlinks in /usr/lib/vmware/bin");
     }
     let usr_bin = staging.join("usr/bin");
     fs::create_dir_all(&usr_bin)?;
@@ -461,7 +463,7 @@ fn create_symlinks(tx: &Sender<BuildEvent>, staging: &Path) -> Result<()> {
 }
 
 fn substitute_placeholders(tx: &Sender<BuildEvent>, staging: &Path) -> Result<()> {
-    // @@BINARY@@ w plikach .desktop
+    // @@BINARY@@ in .desktop files
     let apps = staging.join("usr/share/applications");
     if apps.is_dir() {
         for entry in fs::read_dir(&apps)?.flatten() {
@@ -471,43 +473,43 @@ fn substitute_placeholders(tx: &Sender<BuildEvent>, staging: &Path) -> Result<()
             }
             if let Some((_, binary)) = DESKTOP_BINARIES.iter().find(|(n, _)| *n == name) {
                 if util::replace_in_file(&entry.path(), "@@BINARY@@", binary)? {
-                    util::log(tx, format!("Uzupełniono @@BINARY@@ w {name}"));
+                    util::log(tx, format!("Filled in @@BINARY@@ in {name}"));
                 }
             }
             if let Some((_, wmclass)) = DESKTOP_WMCLASS.iter().find(|(n, _)| *n == name) {
                 if ensure_startup_wmclass(&entry.path(), wmclass)? {
-                    util::log(tx, format!("Dodano StartupWMClass={wmclass} w {name}"));
+                    util::log(tx, format!("Added StartupWMClass={wmclass} in {name}"));
                 }
             }
         }
     }
 
-    // @@LIBCONF_DIR@@ w konfiguracji GTK dołączonej do VMware
+    // @@LIBCONF_DIR@@ in the GTK configuration bundled with VMware
     let libconf = staging.join("usr/lib/vmware/libconf");
     if libconf.is_dir() {
         let replaced = replace_recursive(&libconf, "@@LIBCONF_DIR@@", "/usr/lib/vmware/libconf")?;
         if replaced > 0 {
-            util::log(tx, format!("Uzupełniono @@LIBCONF_DIR@@ w {replaced} plikach"));
+            util::log(tx, format!("Filled in @@LIBCONF_DIR@@ in {replaced} files"));
         }
     }
 
-    // Launcher przy każdym starcie odpala vmware-modconfig (kreator
-    // przebudowy modułów) — na RO /usr to ślepa uliczka. Moduły są w obrazie,
-    // więc wyłączamy test tak samo, jak robi to pakiet AUR: „if true ||”.
+    // On every start the launcher runs vmware-modconfig (the module rebuild
+    // wizard) — a dead end on a read-only /usr. The modules are already in the
+    // image, so disable the check the same way the AUR package does: "if true ||".
     for rel in ["usr/bin/vmware", "usr/bin/vmware-tray"] {
         let path = staging.join(rel);
         if path.is_file() && patch_launcher(&path)? {
-            util::log(tx, format!("Wyłączono test modułów w /{rel}"));
+            util::log(tx, format!("Disabled the module check in /{rel}"));
         }
     }
     Ok(())
 }
 
-/// Odpowiednik seda z AUR: linię „if "$BINDIR"/vmware-modconfig --appname=…”
-/// zastępuje „if true ||” (warunek kontynuuje się w następnej linii).
+/// Equivalent of the AUR sed: replaces the line `if "$BINDIR"/vmware-modconfig --appname=…`
+/// with `if true ||` (the condition continues on the next line).
 fn patch_launcher(path: &Path) -> Result<bool> {
     let content = fs::read_to_string(path)
-        .with_context(|| format!("Odczyt {}", path.display()))?;
+        .with_context(|| format!("Reading {}", path.display()))?;
     let marker = "vmware-modconfig --appname=";
     if !content.contains(marker) {
         return Ok(false);
@@ -536,11 +538,11 @@ fn patch_launcher(path: &Path) -> Result<bool> {
     Ok(changed)
 }
 
-/// Dodaje StartupWMClass= do pliku .desktop (po linii StartupNotify,
-/// a gdy jej nie ma — na końcu). Zwraca true przy zmianie.
+/// Adds StartupWMClass= to a .desktop file (after the StartupNotify line,
+/// or at the end when it is missing). Returns true on change.
 fn ensure_startup_wmclass(path: &Path, wmclass: &str) -> Result<bool> {
     let content = fs::read_to_string(path)
-        .with_context(|| format!("Odczyt {}", path.display()))?;
+        .with_context(|| format!("Reading {}", path.display()))?;
     if content.contains("StartupWMClass=") {
         return Ok(false);
     }
@@ -578,9 +580,9 @@ fn replace_recursive(dir: &Path, from: &str, to: &str) -> Result<usize> {
     Ok(count)
 }
 
-/// Pliki własne rozszerzenia: metadane sysext, jednostki systemd, drop-in
-/// Upholds= (autostart usług po scaleniu), tmpfiles (zasiew /etc/vmware),
-/// fabryczna zawartość /etc.
+/// The extension's own files: sysext metadata, systemd units, the Upholds=
+/// drop-in (service autostart after merge), tmpfiles (seeding /etc/vmware),
+/// factory /etc contents.
 fn write_own_files(tx: &Sender<BuildEvent>, staging: &Path, fuse_conf: bool) -> Result<()> {
     util::write_file(
         &staging.join("usr/lib/extension-release.d/extension-release.vmware"),
@@ -613,8 +615,8 @@ fn write_own_files(tx: &Sender<BuildEvent>, staging: &Path, fuse_conf: bool) -> 
         0o644,
     )?;
 
-    // tmpfiles: C+ scala brakujące pliki, nigdy nie nadpisuje istniejących —
-    // konfiguracja użytkownika w /etc/vmware jest bezpieczna.
+    // tmpfiles: C+ merges missing files and never overwrites existing ones —
+    // user configuration in /etc/vmware is safe.
     let mut tmpfiles =
         String::from("C+ /etc/vmware - - - - /usr/share/vmware-sysext/etc/vmware\n");
     if fuse_conf {
@@ -640,16 +642,15 @@ fn write_own_files(tx: &Sender<BuildEvent>, staging: &Path, fuse_conf: bool) -> 
         assets::ETC_BOOTSTRAP,
         0o644,
     )?;
-    util::log(tx, "Zapisano metadane rozszerzenia, jednostki systemd i drop-in Upholds");
+    util::log(tx, "Wrote extension metadata, systemd units and the Upholds drop-in");
     Ok(())
 }
 
-/// depmod na „nadzbiorze”: lustro modułów bazowego systemu (dowiązania),
-/// do którego dokładamy nasze vmmon.ko/vmnet.ko jako prawdziwe pliki.
-/// Wynikowe modules.* trafiają do rozszerzenia i przesłaniają bazowe po
-/// scaleniu overlayem, dzięki czemu modprobe widzi i bazowe, i nasze moduły
-/// (wzorzec Flatcara; niekompletny modules.dep ukrywałby moduły bazowe —
-/// Flatcar #1576).
+/// depmod on a "superset": a mirror of the base system's modules (symlinks)
+/// into which our vmmon.ko/vmnet.ko are added as real files. The resulting
+/// modules.* go into the extension and shadow the base ones after the overlay
+/// merge, so modprobe sees both the base modules and ours (Flatcar pattern;
+/// an incomplete modules.dep would hide the base modules — Flatcar #1576).
 pub fn depmod_superset(
     tx: &Sender<BuildEvent>,
     cancel: &Arc<AtomicBool>,
@@ -659,11 +660,11 @@ pub fn depmod_superset(
 ) -> Result<()> {
     let base = PathBuf::from("/usr/lib/modules").join(kernel);
     if !base.is_dir() {
-        bail!("Brak katalogu modułów bazowych {}", base.display());
+        bail!("Base module directory {} is missing", base.display());
     }
     let dep_root = work.join("depmod");
     let mirror = dep_root.join("lib/modules").join(kernel);
-    util::log(tx, "Buduję lustro modułów bazowych do wyliczenia zależności…");
+    util::log(tx, "Building a mirror of the base modules to compute dependencies…");
     util::symlink_farm(&base, &mirror)?;
 
     let misc_src = staging.join("usr/lib/modules").join(kernel).join("misc");
@@ -681,40 +682,40 @@ pub fn depmod_superset(
         kernel.into(),
     ];
     util::run_cmd(tx, cancel, None, &[], "depmod", depmod_args)
-        .context("depmod nie powiódł się")?;
+        .context("depmod failed")?;
 
     let out_dir = staging.join("usr/lib/modules").join(kernel);
     let mut copied = Vec::new();
     for entry in fs::read_dir(&mirror)?.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         let meta = fs::symlink_metadata(entry.path())?;
-        // Kopiujemy tylko pliki wygenerowane przez depmod (zwykłe pliki);
-        // niezmienione wpisy pozostały dowiązaniami do bazy i nie są potrzebne.
+        // Copy only the files generated by depmod (regular files); unchanged
+        // entries remained symlinks to the base and are not needed.
         if name.starts_with("modules.") && meta.is_file() {
             fs::copy(entry.path(), out_dir.join(&name))?;
             copied.push(name);
         }
     }
     if !copied.iter().any(|n| n == "modules.dep") {
-        bail!("depmod nie wygenerował modules.dep — nieoczekiwany wynik");
+        bail!("depmod did not generate modules.dep — unexpected result");
     }
     copied.sort();
-    util::log(tx, format!("Wygenerowane metadane: {}", copied.join(", ")));
+    util::log(tx, format!("Generated metadata: {}", copied.join(", ")));
     Ok(())
 }
 
-/// Czy SELinux działa w trybie enforcing?
+/// Is SELinux running in enforcing mode?
 fn selinux_enforcing() -> bool {
     fs::read_to_string("/sys/fs/selinux/enforce")
         .map(|s| s.trim() == "1")
         .unwrap_or(false)
 }
 
-/// Buduje obraz vmware.raw (erofs; awaryjnie squashfs). Etykiety SELinux
-/// pochodzą z systemowego file_contexts (stockowy Bazzite jest w trybie
-/// enforcing — obraz bez etykiet by tam nie działał). Obraz powstaje pod
-/// nazwą tymczasową i dopiero po sukcesie podmienia vmware.raw — porażka
-/// lub anulowanie nie niszczy poprzedniego działającego obrazu.
+/// Builds the vmware.raw image (erofs; squashfs as a fallback). SELinux labels
+/// come from the system file_contexts (stock Bazzite runs in enforcing mode —
+/// an unlabeled image would not work there). The image is created under a
+/// temporary name and replaces vmware.raw only on success — a failure or a
+/// cancellation does not destroy the previous working image.
 pub fn make_image(
     tx: &Sender<BuildEvent>,
     cancel: &Arc<AtomicBool>,
@@ -723,7 +724,7 @@ pub fn make_image(
     output_dir: &Path,
 ) -> Result<PathBuf> {
     util::normalize_dir_modes(staging)
-        .context("Normalizacja uprawnień katalogów drzewa nie powiodła się")?;
+        .context("Normalizing directory permissions of the tree failed")?;
 
     let raw = output_dir.join("vmware.raw");
     let tmp = output_dir.join(".vmware.raw.tmp");
@@ -734,9 +735,9 @@ pub fn make_image(
         let _ = fs::remove_file(&tmp);
         return Err(err);
     }
-    fs::rename(&tmp, &raw).context("Nie udało się podmienić vmware.raw")?;
+    fs::rename(&tmp, &raw).context("Failed to replace vmware.raw")?;
 
-    // Kopia manifestu obok obrazu — przepis na odtworzenie builda.
+    // A copy of the manifest next to the image — the recipe to reproduce the build.
     let manifest = staging.join("usr/share/vmware-sysext/manifest");
     if manifest.is_file() {
         let _ = fs::copy(&manifest, output_dir.join("vmware-sysext-manifest.txt"));
@@ -745,7 +746,7 @@ pub fn make_image(
     let size = fs::metadata(&raw)?.len();
     util::log(
         tx,
-        format!("Obraz gotowy: {} ({})", raw.display(), util::human_size(size)),
+        format!("Image ready: {} ({})", raw.display(), util::human_size(size)),
     );
     Ok(raw)
 }
@@ -760,10 +761,10 @@ fn build_image_at(
     if util::cmd_exists("mkfs.erofs") {
         let system_contexts = Path::new("/etc/selinux/targeted/contexts/files/file_contexts");
         let contexts = if system_contexts.is_file() {
-            util::log(tx, "Etykiety SELinux: systemowy file_contexts");
+            util::log(tx, "SELinux labels: system file_contexts");
             system_contexts.to_path_buf()
         } else {
-            util::log(tx, "Etykiety SELinux: wbudowany zestaw zapasowy");
+            util::log(tx, "SELinux labels: built-in fallback set");
             let fallback = work.join("file_contexts");
             fs::write(&fallback, assets::FILE_CONTEXTS_FALLBACK)?;
             fallback
@@ -784,14 +785,14 @@ fn build_image_at(
             }
             if selinux_enforcing() {
                 return Err(err.context(
-                    "mkfs.erofs z etykietami SELinux nie powiódł się, a system działa \
-                     w trybie enforcing — obraz bez etykiet by nie zadziałał, więc nie \
-                     buduję wersji zapasowej",
+                    "mkfs.erofs with SELinux labels failed and the system runs in \
+                     enforcing mode — an unlabeled image would not work, so no \
+                     fallback image is built",
                 ));
             }
             let _ = tx.send(BuildEvent::Warning(
-                "Obraz zbudowany BEZ etykiet SELinux — zadziała tylko przy SELinux \
-                 permissive/wyłączonym (stockowy Bazzite jest enforcing!)"
+                "Image built WITHOUT SELinux labels — it will only work with SELinux \
+                 permissive/disabled (stock Bazzite is enforcing!)"
                     .into(),
             ));
             let _ = fs::remove_file(image);
@@ -806,13 +807,13 @@ fn build_image_at(
     } else if util::cmd_exists("mksquashfs") {
         if selinux_enforcing() {
             bail!(
-                "Brak mkfs.erofs, a system działa w trybie SELinux enforcing — \
-                 obraz squashfs bez etykiet by nie zadziałał. Zainstaluj erofs-utils."
+                "mkfs.erofs is missing and the system runs in SELinux enforcing mode — \
+                 an unlabeled squashfs image would not work. Install erofs-utils."
             );
         }
         let _ = tx.send(BuildEvent::Warning(
-            "Obraz squashfs BEZ etykiet SELinux — zadziała tylko przy SELinux \
-             permissive/wyłączonym (stockowy Bazzite jest enforcing!)"
+            "squashfs image WITHOUT SELinux labels — it will only work with SELinux \
+             permissive/disabled (stock Bazzite is enforcing!)"
                 .into(),
         ));
         let args: Vec<OsString> = vec![
@@ -825,7 +826,7 @@ fn build_image_at(
         ];
         util::run_cmd(tx, cancel, None, &[], "mksquashfs", args)?;
     } else {
-        bail!("Brak mkfs.erofs i mksquashfs — zainstaluj erofs-utils lub squashfs-tools");
+        bail!("Neither mkfs.erofs nor mksquashfs found — install erofs-utils or squashfs-tools");
     }
     Ok(())
 }

@@ -1,188 +1,183 @@
-# Jak budować obrazy systemd-sysext (`.raw`) — metodologia i pułapki
+# How to build systemd-sysext images (`.raw`) — methodology and pitfalls
 
-Ten dokument to destylat z realnej pracy nad `dms-fedora-sysext` (Hyprland +
-DankMaterialShell na Bazzite/Kinoite). Adresowany do AI budującego podobne
-obrazy sysext — każda zasada tu ma za sobą konkretny incydent z tamtego
-projektu, nie jest teorią.
+This document is distilled from real work on `dms-fedora-sysext` (Hyprland +
+DankMaterialShell on Bazzite/Kinoite). It is addressed to an AI building
+similar sysext images — every rule here is backed by a concrete incident from
+that project, none of it is theory.
 
-## 1. Fundamentalna zasada: sprawdź bazę, zanim cokolwiek dodasz
+## 1. The fundamental rule: check the base before adding anything
 
-Sysext ma sens tylko wtedy, gdy NIE dubluje tego, co host już ma. Przed
-spakowaniem jakiejkolwiek biblioteki/binarki do obrazu:
+A sysext only makes sense when it does NOT duplicate what the host already
+has. Before packing any library/binary into the image:
 
-1. Sprawdź, czy plik o tej samej nazwie (SONAME) już istnieje na hoście:
-   `find /usr/lib64 -name "libfoo.so*"`.
-2. Jeśli go nie ma pod oczywistą nazwą, **nie zakładaj, że go nie ma w
-   ogóle** — sprawdź `/etc/ld.so.conf.d/*.conf` i `ldconfig -p | grep
-   libfoo`. Biblioteka może być zainstalowana pod nietypową ścieżką
-   (np. `pipewire-jack-audio-connection-kit-libs` instaluje `libjack.so.0`
-   w `/usr/lib64/pipewire-0.3/jack/`, ale ta ścieżka jest zarejestrowana w
-   `ld.so.conf.d` i linker normalnie ją widzi — bez żadnego wrappera).
-   Założenie "tego nie ma / linker by tego nie znalazł" bez sprawdzenia
-   `ld.so.conf.d` to najdroższy błąd w tej metodologii — prowadzi do
-   pakowania czegoś zbędnego, co potem trzeba wycofywać.
-3. Sprawdź `rpm -qf <plik>` i `rpm -q --whatprovides "biblioteka()(64bit)"`
-   — to pokazuje, co jest zarejestrowane w bazie RPM (czyli w obrazie
-   ostree lub warstwie rpm-ostree), niezależnie od tego, co aktualnie
-   "widać" w zmergowanym `/usr/lib64` (bo TO może akurat pokazywać Twój
-   WŁASNY, już aktywny sysext, a nie bazę).
-4. `rpm-ostree status` pokazuje realnie warstwowane pakiety — porównaj z
-   tym, co zamierzasz pakować, żeby nie dublować czegoś, co już jest
-   warstwą.
+1. Check whether a file with the same name (SONAME) already exists on the
+   host: `find /usr/lib64 -name "libfoo.so*"`.
+2. If it is not there under the obvious name, **do not assume it is absent
+   altogether** — check `/etc/ld.so.conf.d/*.conf` and `ldconfig -p | grep
+   libfoo`. The library may be installed under an unusual path
+   (e.g. `pipewire-jack-audio-connection-kit-libs` installs `libjack.so.0`
+   in `/usr/lib64/pipewire-0.3/jack/`, but that path is registered in
+   `ld.so.conf.d` and the linker sees it normally — without any wrapper).
+   Assuming "it's not there / the linker would not find it" without checking
+   `ld.so.conf.d` is the most expensive mistake in this methodology — it
+   leads to packing something unnecessary that later has to be rolled back.
+3. Check `rpm -qf <file>` and `rpm -q --whatprovides "library()(64bit)"`
+   — this shows what is registered in the RPM database (i.e. in the ostree
+   image or an rpm-ostree layer), regardless of what is currently "visible"
+   in the merged `/usr/lib64` (because THAT may well be showing your OWN,
+   already active sysext rather than the base).
+4. `rpm-ostree status` shows the actually layered packages — compare it with
+   what you intend to pack, so you do not duplicate something that is
+   already a layer.
 
-Dopiero gdy żadna z tych ścieżek nic nie znajduje, biblioteka faktycznie
-jest kandydatem do spakowania.
+Only when none of these paths finds anything is the library actually a
+candidate for packing.
 
-## 2. Mechanika obrazu
+## 2. Image mechanics
 
 ```bash
 mkdir -p usr/lib/extension-release.d
 printf 'ID=_any\nARCHITECTURE=x86-64\nSYSEXT_SCOPE=system\n' \
-  > usr/lib/extension-release.d/extension-release.<nazwa>
+  > usr/lib/extension-release.d/extension-release.<name>
 
 mkfs.erofs -zlz4hc --all-root \
   --file-contexts=/etc/selinux/targeted/contexts/files/file_contexts \
-  <nazwa>.raw build   # <- katalog źródłowy to RODZIC 'usr/', NIE 'usr/' samo
+  <name>.raw build   # <- the source directory is the PARENT of 'usr/', NOT 'usr/' itself
 ```
 
-Pułapki:
-- Źródło dla `mkfs.erofs` musi być katalogiem zawierającym `usr/`, nie
-  samym `usr/` — inaczej `extension-release.d` jest niewidoczne i merge
-  po cichu nie obejmuje tego rozszerzenia.
-- `ID=fedora`/`ID=bazzite` w `extension-release` nie zawsze dopasowuje się
-  niezawodnie do hosta (zależnie od dokładnej wartości `/etc/os-release`).
-  `ID=_any` jest bezpieczniejszym domyślnym wyborem, jeśli nie potrzebujesz
-  twardej bramki kompatybilności.
-- Sysext ma zawierać WYŁĄCZNIE `/usr` (i ew. `/opt`) — żadnych plików w
-  `/etc`, `/var` itd. Jeśli rozpakowanie RPM-a zostawi coś poza `/usr`
-  (typowo: `/etc/security/limits.d/`, `/etc/fonts/conf.d/`, gołe `/lib/...`
-  bez prefiksu `usr/`), trzeba to albo usunąć, albo przenieść pod `usr/`.
-- `file_contexts` bierz z HOSTA, na którym budujesz (etykiety SELinux) —
-  ale pamiętaj, że to przywiązuje obraz do polityki SELinux TEGO hosta;
-  na systemie bez SELinux jest to nieszkodliwe, na innym z INNĄ polityką
-  może dawać złe etykiety.
+Pitfalls:
+- The source for `mkfs.erofs` must be the directory containing `usr/`, not
+  `usr/` itself — otherwise `extension-release.d` is invisible and the merge
+  silently skips the extension.
+- `ID=fedora`/`ID=bazzite` in `extension-release` does not always match the
+  host reliably (depending on the exact value of `/etc/os-release`).
+  `ID=_any` is the safer default choice if you do not need a hard
+  compatibility gate.
+- A sysext must contain ONLY `/usr` (and possibly `/opt`) — no files in
+  `/etc`, `/var` etc. If unpacking an RPM leaves something outside `/usr`
+  (typically: `/etc/security/limits.d/`, `/etc/fonts/conf.d/`, bare
+  `/lib/...` without the `usr/` prefix), it has to be either removed or
+  moved under `usr/`.
+- Take `file_contexts` from the HOST you are building on (SELinux labels) —
+  but remember this ties the image to THAT host's SELinux policy;
+  on a system without SELinux it is harmless, on another one with a
+  DIFFERENT policy it may produce wrong labels.
 
-## 3. Weryfikacja zależności — rzetelnie, nie przez zgadywanie
+## 3. Dependency verification — rigorously, not by guessing
 
-**Nigdy nie używaj `strings`/`grep` po nazwie biblioteki jako dowodu
-zależności.** Plik `libfoo.so.1` zawiera własną nazwę w swoim SONAME —
-naiwny `strings plik | grep libfoo` da fałszywe trafienie na SAMEGO
-SIEBIE. Właściwe narzędzie:
+**Never use `strings`/`grep` on a library name as proof of a dependency.**
+The file `libfoo.so.1` contains its own name in its SONAME — a naive
+`strings file | grep libfoo` produces a false hit on ITSELF. The right tool:
 
 ```bash
-readelf -d <plik> | grep NEEDED
+readelf -d <file> | grep NEEDED
 ```
 
-To pokazuje PRAWDZIWE, twarde zależności linkowania. Do sprawdzenia "kto
-na całym żywym systemie potrzebuje biblioteki X, poza moim własnym
-pakietem":
+This shows the REAL, hard link-time dependencies. To check "who on the whole
+live system needs library X, apart from my own package":
 
 ```bash
 for f in /usr/bin/* /usr/lib64/*.so*; do
     [ -f "$f" ] || continue
     bn=$(basename "$f" | tr 'A-Z' 'a-z')
-    grep -qxF "$bn" /tmp/moje_wlasne_pliki.txt && continue   # wyklucz WŁASNE pliki (w tym symlinki, case-insensitive!)
-    readelf -d "$f" 2>/dev/null | grep NEEDED | grep -q "libfoo.so" && echo "$f potrzebuje libfoo"
+    grep -qxF "$bn" /tmp/my_own_files.txt && continue   # exclude YOUR OWN files (including symlinks, case-insensitive!)
+    readelf -d "$f" 2>/dev/null | grep NEEDED | grep -q "libfoo.so" && echo "$f needs libfoo"
 done
 ```
 
-Pułapka nr 1: lista "własnych plików" do wykluczenia musi zawierać
-symlinki (`find ... -type f -o -type l`, nie tylko `-type f`) i musi być
-case-insensitive — inaczej złapiesz fałszywe alarmy typu "moja własna
-biblioteka X potrzebuje mojej własnej biblioteki Y" jako "obcy konsument".
+Pitfall no. 1: the "own files" exclusion list must include symlinks
+(`find ... -type f -o -type l`, not just `-type f`) and must be
+case-insensitive — otherwise you get false alarms of the kind "my own
+library X needs my own library Y" reported as a "foreign consumer".
 
-Pułapka nr 2: `ldd`/`readelf` na maszynie, gdzie Twój WŁASNY sysext jest
-już aktywny, zawsze zobaczy zmergowany, aktywny stan — łącznie z Twoimi
-własnymi plikami pod `/usr/lib64`. Jeśli sprawdzasz "czy coś obcego z tego
-korzysta", musisz precyzyjnie wykluczyć wszystko, co Twoje, żeby nie
-porównywać obrazu z nim samym.
+Pitfall no. 2: `ldd`/`readelf` on a machine where your OWN sysext is
+already active always sees the merged, active state — including your own
+files under `/usr/lib64`. If you are checking "does anything foreign use
+this", you must precisely exclude everything of yours, so you do not end up
+comparing the image with itself.
 
-Realny przykład z tego projektu: pierwsze podejście (przez `strings`)
-pokazało dziesiątki fałszywych "konsumentów". Po przejściu na `readelf -d
-NEEDED` z poprawnym wykluczeniem okazało się, że 15 z 16 bibliotek nie ma
-ŻADNEGO obcego konsumenta, a jedna (`libjack.so.0`) ma trzech prawdziwych
-(inny program z osobnego sysextu, `libavdevice` z Fedory, `libportaudio`
-z Fedory) — i ostatecznie ta jedna w ogóle nie powinna być pakowana, bo
-punkt 1 (sprawdź `ld.so.conf.d`) pokazał, że baza już ją dostarcza.
+A real example from this project: the first attempt (via `strings`) showed
+dozens of false "consumers". After switching to `readelf -d NEEDED` with
+correct exclusion it turned out that 15 of the 16 libraries have NO foreign
+consumer at all, and one (`libjack.so.0`) has three real ones (another
+program from a separate sysext, `libavdevice` from Fedora, `libportaudio`
+from Fedora) — and in the end that one should not have been packed at all,
+because step 1 (check `ld.so.conf.d`) showed the base already provides it.
 
-## 4. Izolacja bibliotek: prywatny RUNPATH per pakiet (wzorzec AppImage)
+## 4. Library isolation: a private RUNPATH per package (the AppImage pattern)
 
-Dla bibliotek, które SĄ Twoje (baza ich nie dostarcza, punkt 1 to
-potwierdził) i które NIE mają obcych konsumentów (punkt 3 to potwierdził)
-— warto je odizolować, żeby przyszła aktualizacja bazy nigdy nie mogła ich
-podmienić i żeby żaden inny program nigdy przypadkiem nie zaczął z nich
-korzystać:
+For libraries that ARE yours (the base does not provide them, step 1
+confirmed that) and that have NO foreign consumers (step 3 confirmed that) —
+it is worth isolating them, so that a future base update can never replace
+them and no other program ever accidentally starts using them:
 
 ```bash
-mkdir -p usr/lib/<pakiet>
-mv usr/lib64/libfoo.so* usr/lib/<pakiet>/
-patchelf --set-rpath '$ORIGIN/../lib/<pakiet>' usr/bin/konsument
+mkdir -p usr/lib/<package>
+mv usr/lib64/libfoo.so* usr/lib/<package>/
+patchelf --set-rpath '$ORIGIN/../lib/<package>' usr/bin/consumer
 ```
 
-Krytyczna pułapka — **RUNPATH nie jest dziedziczony tranzytywnie** (w
-odróżnieniu od starego RPATH). Jeśli `libfoo.so` w Twoim prywatnym
-katalogu sama zależy od `libbar.so` w TYM SAMYM katalogu, ustawienie
-RUNPATH tylko na konsumującej binarce NIE WYSTARCZY — dynamiczny linker
-rozwiąże zależność `libfoo→libbar` przez RUNPATH samej `libfoo.so`, które
-domyślnie jest puste. Trzeba dodatkowo:
+The critical pitfall — **RUNPATH is not inherited transitively** (unlike the
+old RPATH). If `libfoo.so` in your private directory itself depends on
+`libbar.so` in the SAME directory, setting RUNPATH only on the consuming
+binary is NOT ENOUGH — the dynamic linker resolves the `libfoo→libbar`
+dependency through the RUNPATH of `libfoo.so` itself, which is empty by
+default. You additionally need:
 
 ```bash
-find usr/lib/<pakiet> -name "*.so*" -exec patchelf --set-rpath '$ORIGIN' {} \;
+find usr/lib/<package> -name "*.so*" -exec patchelf --set-rpath '$ORIGIN' {} \;
 ```
 
-na KAŻDYM pliku wewnątrz katalogu (self-referential RUNPATH — "szukaj też
-w moim własnym katalogu"). Bez tego kroku pierwsza warstwa zależności
-zadziała, a druga (tranzytywna) po cichu spadnie z powrotem na
-`/usr/lib64` bazy — dokładnie ten błąd, który przeszedł pierwszą,
-niedokładną weryfikację w tym projekcie.
+on EVERY file inside the directory (a self-referential RUNPATH — "also look
+in my own directory"). Without this step the first layer of dependencies
+works, while the second (transitive) one silently falls back to the base's
+`/usr/lib64` — exactly the bug that slipped through the first, sloppy
+verification in this project.
 
-Inne pułapki po drodze:
-- Symlinki wersji SONAME (np. `libfoo.so.1 -> libfoo.so.1.2.3`) trzeba
-  przenosić OBIE strony razem — łatwo zapomnieć o samym symlinku albo o
-  pliku docelowym, zostawiając martwy link. Po KAŻDYM przenoszeniu:
-  `find . -xtype l` (zero wyników = OK).
-- Katalog `usr/lib/.build-id/` (symlinki debug-lookup po hashu) staje się
-  częściowo martwy po przeniesieniu bibliotek — nieszkodliwe dla działania
-  (tylko debugger/coredumpctl), ale warto posprzątać: `find . -xtype l
-  -delete`.
-- Pluginy ładowane przez `dlopen()` (np. plugin Hyprlanda, pluginy Qt6)
-  TEŻ potrzebują własnego RUNPATH, liczonego względem ICH położenia w
-  drzewie (głębiej zagnieżdżone = więcej `../` w `$ORIGIN/../../../lib/...`).
-  W praktyce i tak reużyją bibliotek już załadowanych przez proces
-  macierzysty dla tych samych SONAME, ale RUNPATH pluginu nadal się liczy
-  dla JEGO WŁASNEGO rozwiązywania zależności.
+Other pitfalls along the way:
+- SONAME version symlinks (e.g. `libfoo.so.1 -> libfoo.so.1.2.3`) must be
+  moved with BOTH sides together — it is easy to forget either the symlink
+  itself or the target file, leaving a dead link. After EVERY move:
+  `find . -xtype l` (zero results = OK).
+- The `usr/lib/.build-id/` directory (debug-lookup symlinks by hash) becomes
+  partially dead after moving libraries — harmless for operation (only the
+  debugger/coredumpctl), but worth cleaning up: `find . -xtype l -delete`.
+- Plugins loaded via `dlopen()` (e.g. a Hyprland plugin, Qt6 plugins) ALSO
+  need their own RUNPATH, computed relative to THEIR location in the tree
+  (nested deeper = more `../` in `$ORIGIN/../../../lib/...`).
+  In practice they will reuse the libraries already loaded by the parent
+  process for the same SONAMEs, but the plugin's RUNPATH still matters for
+  resolving ITS OWN dependencies.
+- This does NOT solve portability to other distributions/systems — it is
+  purely hygiene within the same distribution line (see item 6).
 
-To NIE rozwiązuje przenośności na inne dystrybucje/systemy — to wyłącznie
-higiena w obrębie tej samej linii dystrybucji (patrz punkt 6).
+## 5. ABI matching for libraries with an unstable private API
 
-## 5. Dopasowanie ABI dla bibliotek z niestabilnym prywatnym API
+Some libraries on the host (typically Qt6, if anything uses its private
+API) do NOT guarantee ABI stability between versions, even point releases.
+If a binary you build links against the private API of such a library,
+**building against "any" version from COPR/another build is not enough** —
+you have to build against EXACTLY the version present on the target host,
+otherwise you get `undefined symbol` at startup.
 
-Niektóre biblioteki na hoście (typowo Qt6, jeśli cokolwiek używa jego
-prywatnego API) NIE gwarantują stabilności ABI między wersjami, nawet
-punktowymi. Jeśli budowana przez Ciebie binarka linkuje się z prywatnym
-API takiej biblioteki, **budowanie przeciw "jakiejkolwiek" wersji z
-COPR/innego builda nie wystarczy** — trzeba budować przeciw DOKŁADNIE tej
-wersji, która jest na docelowym hoście, inaczej dostaniesz `undefined
-symbol` przy starcie.
-
-Przepis (bez dotykania hosta, bez roota):
+The recipe (without touching the host, without root):
 
 ```bash
-# 1. Ustal dokładne NVR na hoście
+# 1. Determine the exact NVRs on the host
 rpm -q qt6-qtbase qt6-qtdeclarative ...
 
-# 2. Pobierz DOKŁADNIE te same NVR (-devel ORAZ runtime, bo symlinki
-#    z -devel wskazują na konkretne nazwy plików runtime)
-dnf5 download qt6-qtbase-devel-<dokładna-wersja> --destdir=. --arch=x86_64
-dnf5 download qt6-qtbase-<dokładna-wersja> --destdir=. --arch=x86_64
-# ... (wszystkie zależności ze speca, ich transytywne -devel też)
+# 2. Download EXACTLY those NVRs (-devel AND runtime, because the symlinks
+#    from -devel point at specific runtime file names)
+dnf5 download qt6-qtbase-devel-<exact-version> --destdir=. --arch=x86_64
+dnf5 download qt6-qtbase-<exact-version> --destdir=. --arch=x86_64
+# ... (all dependencies from the spec, their transitive -devel too)
 
-# 3. Rozpakuj do izolowanego sysrootu (rpm2cpio, NIE instaluj na hosta)
+# 3. Unpack into an isolated sysroot (rpm2cpio, do NOT install on the host)
 mkdir sysroot && cd sysroot
 for rpm in ../rpms/*.rpm; do rpm2cpio "$rpm" | cpio -idm; done
 
-# 4. Buduj z jawnym sysrootem, NIE pozwalając cmake "znaleźć" niczego
-#    poza nim (patrz pułapki niżej)
+# 4. Build with an explicit sysroot, NOT letting cmake "find" anything
+#    outside it (see the pitfalls below)
 export PKG_CONFIG_SYSROOT_DIR="$SYSROOT_DIR"
 export PKG_CONFIG_PATH="$SYSROOT/lib64/pkgconfig:$SYSROOT/share/pkgconfig"
 cmake -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
@@ -191,68 +186,65 @@ cmake -DCMAKE_C_COMPILER=/usr/bin/gcc -DCMAKE_CXX_COMPILER=/usr/bin/g++ \
       -DCMAKE_EXE_LINKER_FLAGS="-L$SYSROOT/lib64" ...
 ```
 
-Pułapki:
-- `.pc` pliki mają `prefix=/usr` zaszyty na sztywno — bez
-  `PKG_CONFIG_SYSROOT_DIR` cmake "znajduje" ścieżki, które fizycznie nie
-  istnieją (prawdziwy `/usr` hosta, nie sysroot).
-- Ustawienie `CMAKE_PREFIX_PATH=$SYSROOT` ma efekt uboczny: `find_program()`
-  zaczyna preferować `cmake`/`ninja`/`gcc` Z SYSROOTU (zwykle niedziałające,
-  bo niekompletne) zamiast działających binarek hosta. Rozwiązanie: jawnie
-  wymuszać `CMAKE_C_COMPILER`/`CMAKE_CXX_COMPILER`/`CMAKE_MAKE_PROGRAM` na
-  ścieżki hosta, nie polegać na automatycznym wykryciu.
-- Część `.pc` nie emituje `-I`/`-L` dla ścieżek uznawanych przez kompilator
-  za domyślne — potrzebne globalne `-isystem $SYSROOT/include` i
-  `-L$SYSROOT/lib64` w fladze, niezależnie od tego, co mówi pkg-config.
-- Symlinki `-devel` czasami wskazują na plik runtime, którego nie ma w
-  sysroocie (bo pobrałeś tylko `-devel`, nie runtime tej samej wersji) —
-  zawsze pobieraj OBA w tej samej wersji.
+Pitfalls:
+- `.pc` files have `prefix=/usr` hardcoded — without
+  `PKG_CONFIG_SYSROOT_DIR` cmake "finds" paths that do not physically exist
+  (the host's real `/usr`, not the sysroot).
+- Setting `CMAKE_PREFIX_PATH=$SYSROOT` has a side effect: `find_program()`
+  starts preferring the `cmake`/`ninja`/`gcc` FROM THE SYSROOT (usually
+  non-functional, because incomplete) over the host's working binaries.
+  The solution: explicitly force `CMAKE_C_COMPILER`/`CMAKE_CXX_COMPILER`/
+  `CMAKE_MAKE_PROGRAM` to host paths, do not rely on autodetection.
+- Some `.pc` files do not emit `-I`/`-L` for paths the compiler considers
+  default — you need a global `-isystem $SYSROOT/include` and
+  `-L$SYSROOT/lib64` in the flags, regardless of what pkg-config says.
+- `-devel` symlinks sometimes point at a runtime file that is not in the
+  sysroot (because you downloaded only `-devel`, not the runtime of the same
+  version) — always download BOTH in the same version.
 
-Wynikowa binarka ma SONAME identyczne z paczką dystrybucyjną, więc
-podmienia się bez przebudowy reszty stosu.
+The resulting binary has a SONAME identical to the distribution package, so
+it swaps in without rebuilding the rest of the stack.
 
-**To dopasowanie jest ważne tylko dopóki baza się nie zmieni.** Po
-aktualizacji bazy (nowa wersja Qt6) może być potrzebne powtórzenie całego
-przepisu z nowymi NVR-ami. To nieuniknione przy używaniu prywatnego API —
-nie próbuj tego "raz na zawsze" zabezpieczyć, tylko miej przepis gotowy do
-szybkiego powtórzenia (patrz punkt 7).
+**This matching only holds until the base changes.** After a base update
+(a new Qt6 version) the whole recipe may need to be repeated with the new
+NVRs. This is unavoidable when using a private API — do not try to secure
+it "once and for all"; instead keep the recipe ready for a quick re-run
+(see item 7).
 
-## 6. Granice tego podejścia — czego to NIE rozwiązuje
+## 6. The limits of this approach — what it does NOT solve
 
-- **Sterownik GPU jest twardym sufitem.** Kompozytor Wayland rozmawia
-  bezpośrednio z DRM/KMS jądra i konkretnym sterownikiem (Mesa albo
-  właścicielski). Nie da się tego "zapakować w środek" sysextu — musi się
-  zgadzać z tym, co faktycznie załadowane w jądrze hosta.
-- **`systemd-sysext` wymaga systemd.** Zero przenośności na dystrybucje
-  bez systemd (Alpine, Void, Gentoo-OpenRC) i oczywiście na nie-Linux.
-- **Zakładany stos bazowy musi być obecny.** Jeśli sysext świadomie NIE
-  dubluje Qt6/Wayland/Mesa/PipeWire (żeby nie rozdymać obrazu), to
-  wymaga hosta, który już to ma — nie zadziała na spinie bez tego stosu
-  (np. GNOME-owy Silverblue dla obrazu zależnego od KDE/Qt6).
-- Żadna technika z tego dokumentu (RUNPATH, dopasowanie NVR) nie zmienia
-  tych trzech granic — to są granice architektoniczne, nie luki w
-  implementacji.
+- **The GPU driver is a hard ceiling.** A Wayland compositor talks directly
+  to the kernel's DRM/KMS and to the specific driver (Mesa or proprietary).
+  This cannot be "packed inside" a sysext — it must match what is actually
+  loaded in the host kernel.
+- **`systemd-sysext` requires systemd.** Zero portability to distributions
+  without systemd (Alpine, Void, Gentoo-OpenRC), and obviously to non-Linux.
+- **The assumed base stack must be present.** If the sysext deliberately
+  does NOT duplicate Qt6/Wayland/Mesa/PipeWire (to avoid bloating the
+  image), it requires a host that already has them — it will not work on a
+  spin without that stack (e.g. a GNOME Silverblue for an image that depends
+  on KDE/Qt6).
+- No technique in this document (RUNPATH, NVR matching) changes these three
+  limits — they are architectural boundaries, not implementation gaps.
 
-## 7. Dyscyplina procesu
+## 7. Process discipline
 
-- **Buduj do pliku roboczego, nie nadpisuj od razu aktywnego
-  `/var/lib/extensions/<nazwa>.raw`.** Sprawdź `systemd-sysext status` i
-  `ls /var/lib/extensions/`, żeby wiedzieć, czy plik, który nadpisujesz,
-  jest właśnie aktywnie zmergowany.
-- **Weryfikuj przez narzędzia, nie przez pamięć** — szczególnie fakty
-  specyficzne dla dystrybucji/wersji (czy coś jest warstwowane przez
-  rpm-ostree, jaka jest dokładna wersja pakietu, czy dana ścieżka jest w
-  `ld.so.conf.d`). Założenia bez sprawdzenia to najdroższe błędy w całej
-  tej metodologii.
-- **`luac -p plik.lua`** (albo odpowiednik dla innego języka configu) do
-  czystej weryfikacji składni bez żadnych efektów ubocznych — zero ryzyka
-  dla żywego systemu.
-- **Polecenia, które WIDOCZNIE ruszają żywy, używany system (kursor,
-  fokus okna, przełączanie pulpitów, restart usług) to nie to samo co
-  bezpieczny odczyt** (`hyprctl monitors -j`, `rpm -qf`, `readelf -d`).
-  Jeśli coś zmienia to, co użytkownik aktualnie widzi/robi na ekranie —
-  zapytaj najpierw, nie zakładaj że krótka chwila zakłócenia jest
-  nieszkodliwa.
-- Trzymaj dokładne wersje pakietów przypięte w jednym miejscu (plik
-  manifestu albo sekcja w README) — "odtwórz obraz" powinno być
-  wykonaniem jednego udokumentowanego przepisu, nie odtwarzaniem sesji
-  czatu z pamięci.
+- **Build to a scratch file; do not immediately overwrite the active
+  `/var/lib/extensions/<name>.raw`.** Check `systemd-sysext status` and
+  `ls /var/lib/extensions/` to know whether the file you are overwriting is
+  actively merged right now.
+- **Verify with tools, not from memory** — especially distribution/version
+  specific facts (whether something is layered by rpm-ostree, what the exact
+  package version is, whether a given path is in `ld.so.conf.d`). Unchecked
+  assumptions are the most expensive mistakes in this whole methodology.
+- **`luac -p file.lua`** (or the equivalent for another config language) for
+  a pure syntax check with no side effects — zero risk to the live system.
+- **Commands that VISIBLY disturb a live, in-use system (the cursor, window
+  focus, desktop switching, service restarts) are not the same as a safe
+  read** (`hyprctl monitors -j`, `rpm -qf`, `readelf -d`). If something
+  changes what the user currently sees/does on screen — ask first, do not
+  assume a brief moment of disruption is harmless.
+- Keep the exact package versions pinned in one place (a manifest file or a
+  README section) — "reproduce the image" should be the execution of a
+  single documented recipe, not a reconstruction of a chat session from
+  memory.

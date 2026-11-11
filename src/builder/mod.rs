@@ -1,5 +1,5 @@
-// Potok budowania: .bundle → ekstrakcja → moduły jądra → drzewo /usr → depmod → vmware.raw
-// Całość działa w osobnym wątku i raportuje postęp kanałem zdarzeń do GUI.
+// Build pipeline: .bundle → extraction → kernel modules → /usr tree → depmod → vmware.raw
+// Everything runs on a separate thread and reports progress to the GUI over an event channel.
 
 pub mod assets;
 pub mod bundle;
@@ -21,32 +21,32 @@ use crate::util;
 #[derive(Debug)]
 pub enum BuildEvent {
     Log(String),
-    /// Ostrzeżenie do pokazania w panelu wyniku (nie tylko w dzienniku).
+    /// Warning to be shown in the result panel (not only in the log).
     Warning(String),
-    /// Rozpoczęcie etapu o podanym indeksie (patrz STAGES).
+    /// Start of the stage with the given index (see STAGES).
     Stage(usize),
     Done(Result<PathBuf, String>),
 }
 
 pub const STAGES: &[&str] = &[
-    "Przygotowanie katalogu roboczego",
-    "Ekstrakcja pakietu .bundle",
-    "Kompilacja modułów jądra (vmmon, vmnet)",
-    "Składanie drzewa rozszerzenia (/usr)",
-    "Metadane modułów (depmod)",
-    "Weryfikacja drzewa (struktura, dowiązania, vermagic)",
-    "Budowanie obrazu vmware.raw",
+    "Preparing the working directory",
+    "Extracting the .bundle package",
+    "Compiling kernel modules (vmmon, vmnet)",
+    "Assembling the extension tree (/usr)",
+    "Module metadata (depmod)",
+    "Verifying the tree (structure, symlinks, vermagic)",
+    "Building the vmware.raw image",
 ];
 
 #[derive(Clone)]
 pub struct BuildConfig {
     pub bundle: PathBuf,
-    /// Wersja jądra, dla której kompilujemy moduły (wynik `uname -r`).
+    /// Kernel version the modules are compiled for (output of `uname -r`).
     pub kernel: String,
-    /// Opcjonalny katalog z łatanymi źródłami modułów
-    /// (vmmon-only/ i vmnet-only/ albo vmmon.tar i vmnet.tar).
+    /// Optional directory with patched module sources
+    /// (vmmon-only/ and vmnet-only/, or vmmon.tar and vmnet.tar).
     pub custom_sources: Option<PathBuf>,
-    /// Opcjonalne podpisywanie modułów pod Secure Boot (klucz prywatny + certyfikat).
+    /// Optional module signing for Secure Boot (private key + certificate).
     pub sign_key: Option<PathBuf>,
     pub sign_cert: Option<PathBuf>,
     pub output_dir: PathBuf,
@@ -83,7 +83,7 @@ fn stage(tx: &Sender<BuildEvent>, index: usize) {
 
 fn check_cancel(cancel: &Arc<AtomicBool>) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
-        bail!("Budowanie przerwane przez użytkownika");
+        bail!("Build cancelled by the user");
     }
     Ok(())
 }
@@ -94,20 +94,20 @@ fn run(cfg: &BuildConfig, tx: &Sender<BuildEvent>, cancel: &Arc<AtomicBool>) -> 
 
     stage(tx, 0);
     if work.exists() {
-        // Bezpiecznik: usuwamy tylko katalog, który sami założyliśmy.
+        // Safety check: only remove a directory we created ourselves.
         if !marker.exists() {
             bail!(
-                "Katalog {} istnieje, ale nie wygląda na katalog roboczy tego programu \
-                 (brak pliku znacznika). Nie usuwam go — wybierz inny katalog wyjściowy \
-                 albo usuń go ręcznie.",
+                "Directory {} exists but does not look like this program's working \
+                 directory (marker file missing). Refusing to remove it — choose a \
+                 different output directory or delete it manually.",
                 work.display()
             );
         }
-        util::log(tx, format!("Czyszczę poprzedni katalog roboczy: {}", work.display()));
-        fs::remove_dir_all(&work).context("Nie udało się wyczyścić katalogu roboczego")?;
+        util::log(tx, format!("Cleaning up the previous working directory: {}", work.display()));
+        fs::remove_dir_all(&work).context("Failed to clean the working directory")?;
     }
-    fs::create_dir_all(&work).context("Nie udało się utworzyć katalogu roboczego")?;
-    fs::write(&marker, "katalog roboczy vmware-sysext-builder\n")?;
+    fs::create_dir_all(&work).context("Failed to create the working directory")?;
+    fs::write(&marker, "vmware-sysext-builder working directory\n")?;
 
     stage(tx, 1);
     let extracted = bundle::extract(tx, cancel, &cfg.bundle, &work.join("extracted"))?;
@@ -133,15 +133,15 @@ fn run(cfg: &BuildConfig, tx: &Sender<BuildEvent>, cancel: &Arc<AtomicBool>) -> 
     stage(tx, 6);
     let raw = sysext::make_image(tx, cancel, &staging, &work, &cfg.output_dir)?;
 
-    util::log(tx, format!("Gotowe: {}", raw.display()));
+    util::log(tx, format!("Done: {}", raw.display()));
     Ok(raw)
 }
 
-/// Polecenia do ręcznej instalacji obrazu (pokazywane użytkownikowi).
-/// Kolejność ma znaczenie: refresh z --no-reload scala obraz bez
-/// przeładowania menedżera usług, potem tmpfiles zasiewa /etc/vmware,
-/// a dopiero daemon-reload uruchamia usługi przez drop-in Upholds= —
-/// inaczej usługi wystartowałyby przed powstaniem /etc/vmware.
+/// Commands for installing the image manually (shown to the user).
+/// Order matters: refresh with --no-reload merges the image without
+/// reloading the service manager, then tmpfiles seeds /etc/vmware,
+/// and only daemon-reload starts the services via the Upholds= drop-in —
+/// otherwise the services would start before /etc/vmware exists.
 pub fn manual_commands(raw: &Path) -> String {
     format!(
         "sudo install -D -m 0644 '{raw}' /var/lib/extensions/vmware.raw\n\
@@ -161,12 +161,12 @@ fn install_script() -> String {
         "systemd-sysext refresh --no-reload\n",
         "systemd-tmpfiles --create /usr/lib/tmpfiles.d/vmware-sysext.conf\n",
         "systemctl daemon-reload\n",
-        "echo 'Instalacja zakończona.'\n",
+        "echo 'Installation finished.'\n",
     )
     .to_string()
 }
 
-/// Instalacja obrazu przez pkexec — uruchamiana wyłącznie na życzenie użytkownika.
+/// Installs the image via pkexec — run only at the user's explicit request.
 pub fn spawn_install(raw: PathBuf) -> BuildTask {
     let (tx, rx) = mpsc::channel();
     let cancel = Arc::new(AtomicBool::new(false));

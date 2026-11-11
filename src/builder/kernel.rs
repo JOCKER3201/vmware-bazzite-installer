@@ -1,4 +1,4 @@
-// Wykrywanie zainstalowanych wersji jądra i dostępności nagłówków (kernel-devel).
+// Detection of installed kernel versions and header availability (kernel-devel).
 
 use std::fs;
 use std::path::PathBuf;
@@ -7,9 +7,9 @@ use std::process::Command;
 #[derive(Clone, Debug)]
 pub struct KernelInfo {
     pub version: String,
-    /// Czy dostępne są nagłówki do kompilacji modułów (…/build/Makefile).
+    /// Whether headers for module compilation are available (…/build/Makefile).
     pub devel: bool,
-    /// Czy to jądro aktualnie uruchomione (uname -r).
+    /// Whether this is the currently running kernel (uname -r).
     pub running: bool,
 }
 
@@ -38,9 +38,10 @@ pub fn detect() -> Vec<KernelInfo> {
             }
             let version = entry.file_name().to_string_lossy().into_owned();
             let devel = path.join("build").join("Makefile").is_file();
-            // Katalog bez kernel/, vmlinuz i build/ to nie zainstalowane jądro,
-            // tylko ślad po scalonym rozszerzeniu (moduły vmmon/vmnet starego
-            // jądra z vmware.raw po aktualizacji systemu) — pomijamy.
+            // A directory without kernel/, vmlinuz and build/ is not an
+            // installed kernel but a leftover of a merged extension (vmmon/vmnet
+            // modules of an old kernel from vmware.raw after a system update) —
+            // skip it.
             if !devel && !path.join("kernel").is_dir() && !path.join("vmlinuz").is_file() {
                 continue;
             }
@@ -52,18 +53,18 @@ pub fn detect() -> Vec<KernelInfo> {
             });
         }
     }
-    // Uruchomione jądro na początku listy, reszta alfabetycznie.
+    // Running kernel first, the rest alphabetically.
     kernels.sort_by(|a, b| b.running.cmp(&a.running).then(a.version.cmp(&b.version)));
     kernels
 }
 
 #[cfg(test)]
 mod tests {
-    /// Podgląd wykrywania na żywym systemie (ślady po sysextach mają zniknąć):
+    /// Preview of the detection on a live system (sysext leftovers must be gone):
     /// `cargo test -- --ignored --nocapture`
     #[test]
     #[ignore]
-    fn wykrywanie_jader_na_zywym_systemie() {
+    fn kernel_detection_on_live_system() {
         for kernel in super::detect() {
             println!(
                 "{} devel={} running={}",

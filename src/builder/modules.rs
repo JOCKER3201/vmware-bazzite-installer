@@ -1,6 +1,6 @@
-// Kompilacja modułów jądra vmmon i vmnet ze źródeł dostarczonych w pakiecie
-// VMware (vmmon.tar / vmnet.tar) albo z łatanych źródeł wskazanych przez
-// użytkownika (układ forka vmware-host-modules: vmmon-only/ i vmnet-only/).
+// Compilation of the vmmon and vmnet kernel modules from the sources shipped
+// in the VMware package (vmmon.tar / vmnet.tar) or from patched sources chosen
+// by the user (vmware-host-modules fork layout: vmmon-only/ and vmnet-only/).
 
 use anyhow::{anyhow, bail, Context, Result};
 use std::ffi::OsString;
@@ -16,7 +16,7 @@ use crate::util;
 pub struct BuiltModules {
     pub vmmon: PathBuf,
     pub vmnet: PathBuf,
-    /// Pochodzenie źródeł modułów — trafia do manifestu odtwarzalności.
+    /// Origin of the module sources — goes into the reproducibility manifest.
     pub source_desc: String,
 }
 
@@ -40,11 +40,11 @@ pub fn build_all(
         let dir = srcroot.join(format!("{name}-only"));
         if !dir.is_dir() {
             bail!(
-                "Brak katalogu źródeł modułu {name} — oczekiwano {}",
+                "Missing source directory for module {name} — expected {}",
                 dir.display()
             );
         }
-        util::log(tx, format!("Kompiluję moduł {name} dla jądra {}", cfg.kernel));
+        util::log(tx, format!("Compiling module {name} for kernel {}", cfg.kernel));
         util::run_cmd(
             tx,
             cancel,
@@ -55,10 +55,10 @@ pub fn build_all(
         )
         .with_context(|| {
             format!(
-                "Kompilacja modułu {name} nie powiodła się. Źródła z pakietu VMware \
-                 najpewniej nie obsługują jądra {kernel} — w „Opcjach zaawansowanych” \
-                 wskaż katalog z łatanymi źródłami (fork vmware-host-modules, układ \
-                 vmmon-only/ i vmnet-only/).",
+                "Compilation of module {name} failed. The sources from the VMware \
+                 package most likely do not support kernel {kernel} — under \
+                 \"Advanced options\" point to a directory with patched sources \
+                 (vmware-host-modules fork, vmmon-only/ and vmnet-only/ layout).",
                 kernel = cfg.kernel
             )
         })?;
@@ -67,10 +67,10 @@ pub fn build_all(
             direct
         } else {
             util::find_file(&dir, &format!("{name}.ko")).ok_or_else(|| {
-                anyhow!("Nie znaleziono zbudowanego pliku {name}.ko w {}", dir.display())
+                anyhow!("Built file {name}.ko not found in {}", dir.display())
             })?
         };
-        util::log(tx, format!("Zbudowano: {}", ko.display()));
+        util::log(tx, format!("Built: {}", ko.display()));
         built.push(ko);
     }
 
@@ -95,35 +95,35 @@ fn prepare_sources(
     let mut have_sources = false;
     let mut source_desc = String::new();
     if let Some(custom) = &cfg.custom_sources {
-        util::log(tx, format!("Katalog użytkownika: {}", custom.display()));
+        util::log(tx, format!("User directory: {}", custom.display()));
         if custom.join("vmmon-only").is_dir() && custom.join("vmnet-only").is_dir() {
-            util::log(tx, "Używam źródeł vmmon-only/ i vmnet-only/ z katalogu użytkownika");
+            util::log(tx, "Using vmmon-only/ and vmnet-only/ sources from the user directory");
             util::copy_tree(&custom.join("vmmon-only"), &srcroot.join("vmmon-only"))?;
             util::copy_tree(&custom.join("vmnet-only"), &srcroot.join("vmnet-only"))?;
-            source_desc = format!("własne źródła (vmmon-only/vmnet-only): {}", custom.display());
+            source_desc = format!("custom sources (vmmon-only/vmnet-only): {}", custom.display());
             have_sources = true;
         } else if custom.join("vmmon.tar").is_file() && custom.join("vmnet.tar").is_file() {
-            util::log(tx, "Używam vmmon.tar i vmnet.tar z katalogu użytkownika");
+            util::log(tx, "Using vmmon.tar and vmnet.tar from the user directory");
             untar(&custom.join("vmmon.tar"), srcroot)?;
             untar(&custom.join("vmnet.tar"), srcroot)?;
-            source_desc = format!("własne archiwa vmmon.tar/vmnet.tar: {}", custom.display());
+            source_desc = format!("custom vmmon.tar/vmnet.tar archives: {}", custom.display());
             have_sources = true;
         }
     }
     if !have_sources {
         let (vmmon_tar, vmnet_tar) = bundle::find_module_tars(extracted)
-            .context("Nie znaleziono vmmon.tar / vmnet.tar w rozpakowanym pakiecie")?;
+            .context("vmmon.tar / vmnet.tar not found in the extracted package")?;
         util::log(
             tx,
-            format!("Źródła modułów: {} oraz {}", vmmon_tar.display(), vmnet_tar.display()),
+            format!("Module sources: {} and {}", vmmon_tar.display(), vmnet_tar.display()),
         );
         untar(&vmmon_tar, srcroot)?;
         untar(&vmnet_tar, srcroot)?;
-        source_desc = "archiwa vmmon.tar/vmnet.tar z pakietu .bundle".to_string();
+        source_desc = "vmmon.tar/vmnet.tar archives from the .bundle package".to_string();
     }
 
-    // Opcjonalne łatki na nowe jądra (układ pakietu AUR vmware-workstation:
-    // vmmon.patch i vmnet.patch nakładane przez `patch -p2` wewnątrz *-only).
+    // Optional patches for new kernels (AUR vmware-workstation package layout:
+    // vmmon.patch and vmnet.patch applied with `patch -p2` inside *-only).
     if let Some(custom) = &cfg.custom_sources {
         let mut any_patch = false;
         for (module, patch_name) in [("vmmon", "vmmon.patch"), ("vmnet", "vmnet.patch")] {
@@ -132,10 +132,10 @@ fn prepare_sources(
                 continue;
             }
             if !util::cmd_exists("patch") {
-                bail!("Znaleziono {patch_name}, ale brak programu `patch` w systemie");
+                bail!("Found {patch_name}, but the `patch` program is not available on this system");
             }
             any_patch = true;
-            util::log(tx, format!("Nakładam łatkę {patch_name} na {module}-only"));
+            util::log(tx, format!("Applying patch {patch_name} to {module}-only"));
             let patch_args: Vec<OsString> = vec![
                 "-p2".into(),
                 "-N".into(),
@@ -150,15 +150,15 @@ fn prepare_sources(
                 "patch",
                 patch_args,
             )
-            .with_context(|| format!("Nałożenie łatki {patch_name} nie powiodło się"))?;
+            .with_context(|| format!("Applying patch {patch_name} failed"))?;
         }
         if any_patch {
-            source_desc.push_str(&format!(" + łatki z {}", custom.display()));
+            source_desc.push_str(&format!(" + patches from {}", custom.display()));
         }
         if !have_sources && !any_patch {
             bail!(
-                "Katalog {} nie zawiera ani źródeł (vmmon-only/ i vmnet-only/ lub \
-                 vmmon.tar i vmnet.tar), ani łatek (vmmon.patch / vmnet.patch)",
+                "Directory {} contains neither sources (vmmon-only/ and vmnet-only/, or \
+                 vmmon.tar and vmnet.tar) nor patches (vmmon.patch / vmnet.patch)",
                 custom.display()
             );
         }
@@ -168,14 +168,14 @@ fn prepare_sources(
 
 fn untar(tar_path: &Path, dest: &Path) -> Result<()> {
     let file = File::open(tar_path)
-        .with_context(|| format!("Otwarcie {}", tar_path.display()))?;
+        .with_context(|| format!("Opening {}", tar_path.display()))?;
     tar::Archive::new(file)
         .unpack(dest)
-        .with_context(|| format!("Rozpakowanie {}", tar_path.display()))?;
+        .with_context(|| format!("Unpacking {}", tar_path.display()))?;
     Ok(())
 }
 
-/// Podpisywanie modułów pod Secure Boot narzędziem sign-file z drzewa jądra.
+/// Signs modules for Secure Boot using the sign-file tool from the kernel tree.
 fn sign_modules(
     tx: &Sender<BuildEvent>,
     cancel: &Arc<AtomicBool>,
@@ -188,11 +188,11 @@ fn sign_modules(
         .join(kernel)
         .join("build/scripts/sign-file");
     if !sign_file.is_file() {
-        bail!("Brak narzędzia sign-file: {}", sign_file.display());
+        bail!("sign-file tool missing: {}", sign_file.display());
     }
     let program = sign_file.to_string_lossy().into_owned();
     for module in modules {
-        util::log(tx, format!("Podpisuję moduł {}", module.display()));
+        util::log(tx, format!("Signing module {}", module.display()));
         let sign_args: Vec<OsString> = vec![
             "sha256".into(),
             key.as_os_str().to_os_string(),

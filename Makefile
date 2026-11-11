@@ -1,5 +1,5 @@
-# Budowanie, pakowanie (AppImage) i instalacja użytkownika (~/.local).
-# Cele: build / package / install / uninstall (+ clean).
+# Build, packaging (AppImage) and per-user installation (~/.local).
+# Targets: build / package / install / uninstall (+ clean).
 
 BIN          := vmware-sysext-builder
 PREFIX       ?= $(HOME)/.local
@@ -17,17 +17,17 @@ APPIMAGE := target/appimage/$(BIN)-$(VERSION)-$(ARCH).AppImage
 
 all: build
 
-## build: kompilacja wydania — bez instalowania czegokolwiek
+## build: release build — installs nothing
 build:
 	$(CARGO) build --release
 
-## package: samodzielny AppImage (wymaga appimagetool w PATH)
+## package: self-contained AppImage (requires appimagetool in PATH)
 package: build
 	@command -v $(APPIMAGETOOL) >/dev/null 2>&1 || { \
-		echo "Brak narzędzia '$(APPIMAGETOOL)'."; \
-		echo "Pobierz je z https://github.com/AppImage/appimagetool/releases"; \
-		echo "i umieść w PATH (np. ~/.local/bin/appimagetool), albo podaj"; \
-		echo "ścieżkę zmienną APPIMAGETOOL=/ścieżka/do/appimagetool."; \
+		echo "Tool '$(APPIMAGETOOL)' not found."; \
+		echo "Download it from https://github.com/AppImage/appimagetool/releases"; \
+		echo "and put it in PATH (e.g. ~/.local/bin/appimagetool), or pass"; \
+		echo "its path via APPIMAGETOOL=/path/to/appimagetool."; \
 		exit 1; }
 	rm -rf $(APPDIR)
 	install -D -m 0755 $(TARGET) $(APPDIR)/usr/bin/$(BIN)
@@ -36,9 +36,9 @@ package: build
 	ln -sf $(BIN).svg $(APPDIR)/.DirIcon
 	ln -sf usr/bin/$(BIN) $(APPDIR)/AppRun
 	ARCH=$(ARCH) $(APPIMAGETOOL) $(APPDIR) $(APPIMAGE)
-	@echo "Gotowe: $(APPIMAGE)"
+	@echo "Done: $(APPIMAGE)"
 
-## install: instalacja dla bieżącego użytkownika (binarka, menu, ikona)
+## install: per-user installation (binary, menu entry, icon)
 install: build
 	install -D -m 0755 $(TARGET) $(DESTDIR)$(PREFIX)/bin/$(BIN)
 	install -D -m 0644 packaging/$(BIN).svg \
@@ -48,16 +48,16 @@ install: build
 		> $(DESTDIR)$(PREFIX)/share/applications/$(BIN).desktop
 	chmod 0644 $(DESTDIR)$(PREFIX)/share/applications/$(BIN).desktop
 	-update-desktop-database -q $(DESTDIR)$(PREFIX)/share/applications 2>/dev/null
-	@echo "Zainstalowano: $(PREFIX)/bin/$(BIN) (+ wpis w menu aplikacji)"
+	@echo "Installed: $(PREFIX)/bin/$(BIN) (+ application menu entry)"
 
-## uninstall: usunięcie wszystkiego, co zainstalował cel install
+## uninstall: remove everything the install target installed
 uninstall:
 	rm -f $(PREFIX)/bin/$(BIN)
 	rm -f $(PREFIX)/share/applications/$(BIN).desktop
 	rm -f $(PREFIX)/share/icons/hicolor/scalable/apps/$(BIN).svg
 	-update-desktop-database -q $(PREFIX)/share/applications 2>/dev/null
-	@echo "Odinstalowano."
+	@echo "Uninstalled."
 
-## clean: usunięcie artefaktów budowania
+## clean: remove build artifacts
 clean:
 	$(CARGO) clean
